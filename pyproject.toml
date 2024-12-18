@@ -1,0 +1,87 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel", "versioneer"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+authors = [
+  {name = "Eli Ateljevich", email = "eli@water.ca.gov"}
+]
+classifiers = [
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Topic :: Software Development :: Libraries :: Python Modules"
+]
+dependencies = [
+  # package requirements go here
+]
+description = "Martinez EC Estimator"
+dynamic = ["version"]
+license = {text = "MIT"}
+name = "mrzecest"
+readme = "README.rst"
+requires-python = ">=3.9"
+
+[project.optional-dependencies]
+test = [
+  "pytest",
+  "pytest-cov",
+]
+
+
+
+[project.urls]
+repository = "https://github.com/eli/mrzecest"
+
+[tool.coverage.report]
+exclude_lines = [
+  "pragma: no cover",
+  # This covers both typing.TYPE_CHECKING and plain TYPE_CHECKING, with any amount of whitespace
+  "if\\s+(typing\\.)?TYPE_CHECKING:",
+  'if __name__ == "__main__":'
+]
+omit = [
+  "src/mrzecest/__main__.py",
+  "src/mrzecest/_version.py",
+  "tests/*"
+]
+
+[tool.distutils.bdist_wheel]
+universal = true
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.package-data]
+"*" = ["*.*"]
+
+[tool.versioneer]
+VCS = "git"
+versionfile_source = "mrzecest/_version.py"
+versionfile_build = "mrzecest/_version.py"
+tag_prefix = ""
+parentdir_prefix = "mrzecest-"
+
+
+[tool.pytest.ini_options]
+addopts = [
+  "-vv",
+  "--color=yes",
+  "--cov-append",
+  "--cov-branch",
+  "--cov-report=term-missing",
+  "--cov=mrzecest",
+  "--tb=native",
+  "--strict-markers",
+  "--durations=20"
+]
+markers = [
+  "serial: execute test serially (to avoid race conditions)",
+  "slow: tests can take a long time (deselect with '-m \"not slow\"')"
+]
+norecursedirs = [".*", "*.egg*", "build", "dist", "conda.recipe", "examples", "env", "envs", "scripts"]
