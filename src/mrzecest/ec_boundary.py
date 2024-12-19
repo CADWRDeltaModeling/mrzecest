@@ -6,19 +6,12 @@ import yaml
 import pandas as pd
 import numpy as np
 import datetime as dt
+from vtools import *
 import os
 import sys
 
 
-from ec_functions import gcalc, ecest, calc_filtered, plot_dicts
-
 from gekko import GEKKO
-
-with open("example.yaml") as stream:
-    try:
-        print(yaml.safe_load(stream))
-    except yaml.YAMLE
-
 
 
 def gcalc(ndo,
@@ -51,7 +44,7 @@ def gcalc(ndo,
     if ti == pd.Timedelta("15MIN"):
         # dt = 0.25 # hours 
         dt = 900. # [s]
-    elif ti == pd.Timedelta('1h")
+    elif ti == pd.Timedelta("1h"):
         dt = 3600. # [s]
     else:
         raise ValueError("NDO time step must be 15MIN or 1HOUR. Please interpolate")
@@ -77,94 +70,150 @@ def gcalc(ndo,
 
 
 
-def find_ecest_params(elev, ndo, ec_obs,
-                      gbeta = 1.5e10, g0 = 5000,
-                      so = 32000, sb = 200, 
-                      npow1 = 0.770179, 
-                      b0 = 1.37e-2, b1 = -6.43e-5, Dt = "3HOUR", k0 = -1,
-                      min_ec = 200,
-                      a = [1.59e-4, -1.28e-5, 6.96e-6, 4.83e-5, -7.67e-5, 6.93e-5, -3.85e-5]):
+def fit_mrzecest(config, elev=None, ndo=None, ec_obs=None):
     
-    # newstart = ndo.index[0] - pd.Timedelta("21HOURS")
-    # newend = ndo.index[-1] - pd.Timedelta("3HOURS")
-    # z = elev.loc[newstart:newend]
+    if isinstance(config,str): 
+        config = parse_config(config)
     
-    ndo.columns = ['ndo']
+    #           gbeta = 1.5e10, g0 = 5000,
+    #                  so = 32000, sb = 200, 
+                    #   npow1 = 0.770179, 
+                    #   b0 = 1.37e-2, b1 = -6.43e-5, Dt = "3HOUR", k0 = -1,
+                    #   min_ec = 200,
+                    #   a = [1.59e-4, -1.28e-5, 6.96e-6, 4.83e-5, -7.67e-5, 6.93e-5, -3.85e-5]):    
+    
+    # Input data can be a superset of the fitting period from fit_start to fit_end
+    # but the NDO and stage part cannot be nan.
+    # Set up filtration and filter lags before checking bounds, since they pad with nans on the ends
+    z0 = elev.copy()
+    elev_filt = cosine_lanczos(elev,'40h')
+    # set up filter
+    
+    filter_dt = pd.Timedelta(config['filter_setup']['dt'])
 
-    elev.columns = ['z0']
-    ec_obs = ec_obs.resample('15T').interpolate(method='linear')
-    ec_obs.index = ec_obs.index.to_period(freq='15T')
-    ec_obs.columns = ['ec_obs']
+    filter_len = int(config['filter_setup']['filter_length'])
+    filter_k0 = int(config['filter_setup']['k0'])
+    ndofreq = pd.Timedelta(ndo.index.freq)
+    dstep = int(filter_dt/ndofreq) # number of rows for each Dt
+    assert dstep == 12, "Erase this later"
 
-    solu_df = pd.merge(ndo, elev, how='left', left_index=True, right_index=True)
-    solu_df = pd.merge(solu_df, ec_obs, how='left', left_index=True, right_index=True)
-    dstep = int(pd.Timedelta(Dt)/pd.Timedelta(ndo.index.freq)) # number of rows for each Dt
+    solu_df = pd.concat((ec_obs,ndo,elev_filt,z0),axis=1) 
+    solu_df.columns = ["ec_obs","ndo","elev_filt","z0"]   
+
+    a = config['param']['afilt'][0]
+    a_lb = config['param']['afilt'][1]
+    a_ub = config['param']['afilt'][2]
+    print(a)
+    print(a_lb)
+    print(filter_len)
+    assert len(a) == filter_len
+    assert len(a_ub) == filter_len
 
     for k in range(len(a)):
-        solu_df[f'z{k+1}'] = solu_df['z0'].shift(k*dstep)
+        solu_df[f'z{k+1}'] = solu_df['z0'].shift( (filter_k0 - k)*dstep)
 
-    solu_df = solu_df.dropna()
-    solu_df = solu_df.iloc[:500,:]
+
+    # Now do bounds/nan check
+    start = pd.to_datetime(config['fit_start'])
+    end = pd.to_datetime(config['fit_end'])
+    solu_df = solu_df.loc[start:end,:]    
+ 
+    #centering: causal   # must be 'centered' or 'causal'
     
-    z = solu_df.filter(like='z').to_numpy()
+
 
     # Initialize GEKKO model
-    temp_dir = r'./gekko_model'
-    os.makedirs(temp_dir, exist_ok=True)
-    m = GEKKO(remote=True, temp_dir=temp_dir)
-    m.time = solu_df.index.astype('int64') / 10**9  # Convert to seconds (since PeriodIndex uses nanoseconds)
-    
+    #temp_dir = r'./gekko_model'
+    #os.makedirs(temp_dir, exist_ok=True)
+    m = GEKKO(remote=True)
+    elapsed = datetime_elapsed(solu_df).astype('int64')
+    m.time = elapsed.index.to_numpy()
+
     # Set the model mode to dynamic if using time
     m.options.IMODE = 4 # Dynamic mode, as an example
     # m.options.MEAS_CHK = 0
-    m.options.solver = 3  # set solver type 
+    #m.options.solver = 3  # set solver type 
 
     # input parameters
     s_obs_var = solu_df['ec_obs'].to_numpy().astype(float)
     q_param = m.Param(value=solu_df[['ndo']].to_numpy().astype(float))
+    
+    z = solu_df.filter(like='z').to_numpy()
+    z_params = [m.Param(value=z[:, k]) for k in range(filter_len)]
+
 
 
     # Define a specific path for saving temporary files
 
     # Define variables
-    g = m.Var(value=g0, lb=0)  # Single GEKKO variable over time
-    beta = m.FV(value=gbeta, lb=0.1)  # Coefficient, lower bound .1
-    beta0 = m.FV(value=b0)
-    beta1 = m.FV(value=b1)
-    n = m.FV(value=npow1, lb=0.1) # lower bound .1
+    g0 = solu_df.at[start,"ndo"]
+    log10beta,betalb,betaub = (float(config['param']['log10gbeta'][0]),
+                             float(config['param']['log10gbeta'][1]),
+                             float(config['param']['log10gbeta'][2]))
+
+    print("g0",g0)
+    b0,b0_lb,b0_ub = (float(config['param']['b0'][0]), 
+                      float(config['param']['b0'][1]),
+                      float(config['param']['b0'][2]))
+    b1,b1_lb,b1_ub = (float(config['param']['b1'][0]), 
+                     float(config['param']['b1'][1]),
+                     float(config['param']['b1'][2]))
+    npow,npow_lb,npow_ub = (float(config['param']['npow'][0]), 
+                           float(config['param']['npow'][1]),
+                           float(config['param']['npow'][2]))
+
+
+    g = m.Var(value=g0, lb=-10000.,ub=1000000)  # Single GEKKO variable over time
+    log10beta = m.FV(value=log10beta,lb=betalb,ub=betaub)  # Coefficient, lower bound .1
+    beta0 = m.FV(value=b0,lb=b0_lb,ub=b0_ub)
+    beta1 = m.FV(value=b1,lb=b1_lb,ub=b1_ub)
+    npow = m.FV(value=npow, lb=npow_lb,ub=npow_ub) # lower bound .1
     a_param = [m.FV(value=ak) for ak in a]  # Coefficients for lags
 
+
+
+
     # Enable parameters for optimization
-    for param in [beta, beta0, beta1, n] + a_param:
+    for param in [log10beta, beta0, beta1, npow] + a_param:
         param.STATUS = 1
 
     # Define differential equation
 
-    m.Equation(g.dt() == (g * (q_param - g) / beta))
+    m.Equation(g.dt() == (g * (q_param - g) / 10.**log10beta))
 
     # Define output s
-    so = so  # Example constant
-    sb = sb  # Example constant
+    so = m.Const(value=float(config['so']))  # Example constant
+    sb = m.Const(value=float(config['sb']))  # Example constant
+    ndata = m.Const(value=solu_df.shape[0])
 
     # Summation term for z_k
-    z_sum = m.Intermediate(m.sum([ak * z[:, k] for k, ak in enumerate(a_param)]))
+    #z_sum = m.Intermediate(m.sum([ak * z[:, k] for k, ak in enumerate(a_param)]))
+    z_sum = m.Intermediate(m.sum([ak * z_param for ak, z_param in zip(a_param, z_params)]))
+
 
     # Define the model for s
-    s = m.Intermediate(m.exp(beta0 + beta1 * g**n + g * z_sum) * (so - sb) + sb)
-    print("s_obs_var:", s_obs_var.shape, s_obs_var)
-    print("z array:", z.shape, z)
-    print("z_sum:", z_sum)
-    print("Intermediate s:", m.exp(beta0 + beta1 * g**n + g * z_sum) * (so - sb) + sb)
+    s = m.Intermediate(m.exp(beta0 + beta1 * g**npow + g * 1.0) * (so - sb) + sb)
+    # print("s_obs_var:", s_obs_var.shape, s_obs_var)
+    # print("z array:", z.shape, z)
+    # print("z_sum:", z_sum)
+    # print("qparam length",len(q_param.value))
+    
 
     # Define error for each observation
-    error = [m.log((s - so) / (so - sb)) - s_obs_var[i] for i in range(len(s_obs_var))]
-    print([e**2 for e in error])  # Check the squared errors list
+    #error = [m.log((s - so) / (so - sb)) - s_obs_var[i] for i in range(len(s_obs_var))]
+    #print([e**2 for e in error])  # Check the squared errors list
     # Define the objective as the sum of squared errors
-    m.Obj(m.sum([e**2 for e in error]))
+
+    observed_data = solu_df.ec_obs.to_numpy()
+    s_obs = m.Param(value =  observed_data)
+    error = m.Intermediate((s - s_obs)**2)
+    print(solu_df.shape)
+    print("Objective test:", type((g - s_obs)**2))
+    squared_errors = [(s - s_obs)**2 for _ in m.time]
+    m.Obj(m.sum(squared_errors))
 
     # Solve the problem
-    os.environ['GEKKO_TMPDIR'] = temp_dir
-    m.solve(disp=True, debug=2)
+    m.solve(disp=True)
 
     # Extract results
     g_sol = g.value
@@ -183,9 +232,11 @@ def find_ecest_params(elev, ndo, ec_obs,
 def parse_config(yml):
     with open(yml) as stream:
         try:
-            print(yaml.safe_load(stream))
+            config = yaml.safe_load(stream)
         except yaml.YAMLError as exc:
             print(exc)
+            raise
+    return config
 
 
 def est_mrzec_model(config, df_ndo=None, df_mtz_elev=None): 
