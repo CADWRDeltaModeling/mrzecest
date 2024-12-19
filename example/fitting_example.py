@@ -1,4 +1,5 @@
-from mrzecest.ec_boundary import *
+from mrzecest.ec_boundary_fit_gee import *
+from mrzecest.fitting_util import *
 from vtools import rhistinterp
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -18,7 +19,7 @@ def main():
      #ax0.plot(ndo15.index,ndo15.values)
      #ax1.plot(elev.index, elev.values)
      #ax2.plot(obs_ec.index,obs_ec.values)
-     fit_mrzecest(config, elev=elev, ndo=ndo15, ec_obs=obs_ec15)
+     fit_mrzecest_gee(config, elev=elev, ndo=ndo15, ec_obs=obs_ec15)
      
 
 
