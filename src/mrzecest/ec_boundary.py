@@ -85,20 +85,21 @@ def fit_mrzecest(config, elev=None, ndo=None, ec_obs=None):
     # Input data can be a superset of the fitting period from fit_start to fit_end
     # but the NDO and stage part cannot be nan.
     # Set up filtration and filter lags before checking bounds, since they pad with nans on the ends
-    z0 = elev.copy()
+    
     elev_filt = cosine_lanczos(elev,'40h')
+    elev_tidal = elev.copy() - elev_filt  # isolate tidal part
+
     # set up filter
     
     filter_dt = pd.Timedelta(config['filter_setup']['dt'])
-
     filter_len = int(config['filter_setup']['filter_length'])
     filter_k0 = int(config['filter_setup']['k0'])
     ndofreq = pd.Timedelta(ndo.index.freq)
     dstep = int(filter_dt/ndofreq) # number of rows for each Dt
-    assert dstep == 12, "Erase this later"
+    #assert dstep == 12, "Erase this later"
 
-    solu_df = pd.concat((ec_obs,ndo,elev_filt,z0),axis=1) 
-    solu_df.columns = ["ec_obs","ndo","elev_filt","z0"]   
+    solu_df = pd.concat((ec_obs,ndo,elev_filt,elev_tidal),axis=1) 
+    solu_df.columns = ["ec_obs","ndo","elev_filt","elev_tidal"]   
 
     a = config['param']['afilt'][0]
     a_lb = config['param']['afilt'][1]
@@ -110,7 +111,7 @@ def fit_mrzecest(config, elev=None, ndo=None, ec_obs=None):
     assert len(a_ub) == filter_len
 
     for k in range(len(a)):
-        solu_df[f'z{k+1}'] = solu_df['z0'].shift( (filter_k0 - k)*dstep)
+        solu_df[f'z{k+1}'] = solu_df['elev_tidal'].shift( (filter_k0 - k)*dstep)
 
 
     # Now do bounds/nan check
@@ -131,8 +132,8 @@ def fit_mrzecest(config, elev=None, ndo=None, ec_obs=None):
 
     # Set the model mode to dynamic if using time
     m.options.IMODE = 4 # Dynamic mode, as an example
-    # m.options.MEAS_CHK = 0
-    #m.options.solver = 3  # set solver type 
+    #m.options.MEAS_CHK = 0
+    m.options.DIAGLEVEL = 3  # set solver type 
 
     # input parameters
     s_obs_var = solu_df['ec_obs'].to_numpy().astype(float)
