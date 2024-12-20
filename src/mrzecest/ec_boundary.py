@@ -88,8 +88,9 @@ def g_kernel(ndo,beta,g0,dt):
     return g
 
 def ndo_mod(ndo,d_elev_filt,area_coef,energy,energy_coef):
-    ndo_mod = ndo + area_coef*d_elev_filt + energy_coef*energy
-    return ndo_mod
+    ndo_mod = ndo.squeeze() + area_coef*d_elev_filt.squeeze() + energy_coef*energy.squeeze()
+    ndo_mod.name = 'ndo'
+    return ndo_mod.to_frame()
 
 
 def z_sum_term(z,filter_k0,filt_coefs,filter_dt):
@@ -151,7 +152,7 @@ def ec_est(ndo, elev,
     # calculate subtidal effects on ndo
     offset = elev_filt.index.freq
     
-    two_dtsec = 2.*pd.Timedelta(offset, unit=offset.freqstr.lower()).total_seconds # dt term to be used for estimating derivative of tide
+    two_dtsec = 2.*pd.Timedelta(offset, unit=offset.freqstr.lower()).total_seconds() # dt term to be used for estimating derivative of tide
     d_elev_filt = (elev_filt.shift(-1) - elev_filt.shift(1)) / two_dtsec
     
     ndomod = ndo_mod(ndo,d_elev_filt,area_coef,energy,energy_coef) 
@@ -171,7 +172,8 @@ def ec_est(ndo, elev,
     # using ec_kernel to accelerate, which requires
     # pandas conversion to/from numpy 
     print("solving for ec")
-    ec.iloc[:] = ec_kernel(g.squeeze().to_numpy(),z_sum.squeeze().to_numpy(), beta1, npow, so, sb)
+    beta0 = 0. 
+    ec.iloc[:] = ec_kernel(g.squeeze().to_numpy(),z_sum.squeeze().to_numpy(), beta0, beta1, npow, so, sb)
     print("done")
 
     return ec

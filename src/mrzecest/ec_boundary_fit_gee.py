@@ -36,7 +36,7 @@ def outer_fit(x,data):
     print(f"Entering outer fit with x = {x}")
     log10beta = x[0]
     npow = x[1]
-    area_coef = x[2]*3600*100000.
+    area_coef = x[2]*3600*1000000.
     energy_coef = x[3]*1000
     
 
@@ -115,7 +115,7 @@ def outer_fit(x,data):
     print(ypred)
     ypred.loc[:,'fit']=predictions
 
-    if calls > 100:
+    if calls > 100000:
         fig, ax = plt.subplots(1)
         ax.plot(ypred.index,ypred.values)
         ax.legend(['data','fit'])    
@@ -180,7 +180,7 @@ def fit_mrzecest_gee(config, elev=None, ndo=None, ec_obs=None):
     solu_df = solu_df.loc[start:end,:]    
     solu_df.to_csv("test.csv",index=True,header=True,float_format="%.3f")
 
-    x0 = [10.1,0.65,-12.,0.88]   # log10beta, npow, area correction
+    x0 = [10.1,0.5,-1.,0.88]   # log10beta, npow, area correction
 
     res = scipy.optimize.minimize(outer_fit,x0,args=solu_df,tol=5e-3)
     print(res.x)
@@ -196,13 +196,16 @@ def obj_nlls(x):
     args = (ec_obs,ndo,elev,start,end,filter_k0,filter_dt,so,sb)
     res2 = scipy.optimize.mimize(full_ls_obj,x,args = args)
 
+
+
+
 def full_ls_obj(x,ec_obs,ndo,elev,start,end,filter_k0,filter_dt,so,sb):
     (area_coef,energy_coef,log10beta,beta0,beta1,npow,filt_coefs) = x
 
     print(f"Entering outer fit with x = {x}")
     log10beta = x[0]
     npow = x[1]
-    area_coef = x[2]*100000.
+    area_coef = x[2]*1000000.
     energy_coef = x[3]*1000
 
 
@@ -216,6 +219,6 @@ def full_ls_obj(x,ec_obs,ndo,elev,start,end,filter_k0,filter_dt,so,sb):
                   filt_coefs, filter_dt,
                   so, sb)
 
-    rss = np.sum((predictions-ec_obs) ** 2)
+    rss = np.sum((predictions-ec_obs) ** 2.)
     return rss
-    
+
