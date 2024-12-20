@@ -1,0 +1,32 @@
+start: 2000-01-01
+end: 2004-01-01
+
+output_file: mrz_ec_est.csv
+
+ndo_file: ../data/hist_ndo.csv
+mrz_elev_file: ../data/mrz_hist_stage.csv
+mrz_ec_file: ../data/mrz_hist_ec.csv
+
+storage_area: 34925.0
+
+so : 32000
+sb: 200.
+min_ec: 200.
+storage_aread: 35923.48
+
+filter_setup:
+    dt: 3h
+    k0: -1
+    filter_length: 7
+    centering: causal   # must be 'centered' or 'causal'
+    afilt: [1.59e-4, -1.28e-5, 6.96e-6, 4.83e-5, -7.67e-5, 6.93e-5, -3.85e-5]
+
+param:
+    log10gbeta: 10.1761 # means 1.5e10
+    npow: 0.77
+    b0: [0., -0.25,0.25]
+    b1: -6.43e-5
+    afilt: [[1.59e-4, -1.28e-5, 6.96e-6, 4.83e-5, -7.67e-5, 6.93e-5, -3.85e-5],
+            [-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5],
+            [0.5,0.5,0.5,0.5,0.5,0.5,0.5]
+            ]
