@@ -68,11 +68,7 @@ def fit_mrzecest_scipy(config, elev=None, ndo=None, ec_obs=None):
     solu_df = solu_df.loc[start:end,:]    
     solu_df.to_csv("test.csv",index=True,header=True,float_format="%.3f")
 
-    x0 = [10.1,0.75]
-    y=subfit_mrzecest(x0,data=solu_df)
-    print(y)
-    #res = scipy.minimize(subfit_mrzecest,x0,args=solu_df)
-    # set up filter
+    # now do the fit.
 
 
 

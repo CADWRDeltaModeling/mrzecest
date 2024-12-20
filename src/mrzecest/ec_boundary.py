@@ -87,6 +87,11 @@ def g_kernel(ndo,beta,g0,dt):
         qpast = q
     return g
 
+def ndo_mod(ndo,d_elev_filt,area_coef,energy,energy_coef):
+    ndo_mod = ndo + area_coef*d_elev_filt + energy_coef*energy
+    return ndo_mod
+
+
 def z_sum_term(z,filter_k0,filt_coefs,filter_dt):
 
     filter_len = len(filt_coefs)
@@ -106,7 +111,7 @@ def z_sum_term(z,filter_k0,filt_coefs,filter_dt):
 
 def ec_est(ndo, elev,
            start, end,
-           storage_area,
+           area_coef,energy_coef,
            log10beta,
            beta1, npow, filter_k0,
            filt_coefs, filter_dt,
@@ -140,18 +145,19 @@ def ec_est(ndo, elev,
     # Apply a cosine Lanczos filter (low-pass) to the elevation dataframe
     elev_filt = cosine_lanczos(elev, cutoff_period='40H', padtype='odd')
     elev_tidal = elev.copy() - elev_filt  # isolate tidal part for z_sum term
+    elev_tidal = elev.copy() - elev_filt  # isolate tidal part
+    energy = cosine_lanczos(elev_tidal*elev_tidal,'40h')
 
     # calculate subtidal effects on ndo
-    time_delta = 1/int(pd.Timedelta('1day')/elev_filt.index.freq) # dt term to be used for estimating derivative of tide
-    filt_deriv = pd.DataFrame(index=elev_filt.index, 
-                              data={'derivative':np.gradient(elev_filt.values.flatten(), time_delta), # first difference/derivative [ft/day]
-                                    'ndo':ndo['ndo'].values}) 
+    offset = elev_filt.index.freq
     
-    filt_deriv['ndo_w_subtide'] = filt_deriv['ndo'] - storage_area*(filt_deriv['derivative']) # compute subtidal effect on NDO
-    ndo_w_subtide = filt_deriv[['ndo_w_subtide']]
+    two_dtsec = 2.*pd.Timedelta(offset, unit=offset.freqstr.lower()).total_seconds # dt term to be used for estimating derivative of tide
+    d_elev_filt = (elev_filt.shift(-1) - elev_filt.shift(1)) / two_dtsec
+    
+    ndomod = ndo_mod(ndo,d_elev_filt,area_coef,energy,energy_coef) 
     
     # calculate g-model results
-    g = gcalc(ndo_w_subtide, log10beta=log10beta)
+    g = gcalc(ndomod, log10beta=log10beta)
     
     # calculate lagged z_df term for
     z_sum = z_sum_term(elev_tidal, filter_k0, filt_coefs, filter_dt)
@@ -171,18 +177,21 @@ def ec_est(ndo, elev,
     return ec
 
 @numba.jit
-def ec_kernel(g, z_sum, beta1, npow, so, sb):
+def ec_kernel(g, z_sum, beta0, beta1, npow, so, sb):
     """numpy based kernel for ec(t) using numba."""
     
     ec = np.empty(len(g),dtype=float)
     ntime = len(g)
 
     for i in np.arange(1, ntime):
-        ecfrac = beta1 * g[i]**npow + g[i] * z_sum[i] # npow1 and b1 are our parameters to tweak
-
+        ecfrac = beta0 + beta1 * g[i]**npow + g[i] * z_sum[i] # npow1 and b1 are our parameters to tweak
         ec[i] = np.exp(ecfrac)*(so-sb) + sb # solving for s term
     
     return ec
+
+
+
+
 
 def ec_config(config):
 

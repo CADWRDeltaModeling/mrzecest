@@ -15,24 +15,40 @@
 import pandas as pd
 import numpy as np
 from vtools import *
-from mrzecest.ec_boundary import gcalc
+import matplotlib.pyplot as plt
+from mrzecest.ec_boundary import gcalc,ndo_mod
+from mrzecest.fitting_util import parse_config
 
 import statsmodels.api as sm
-import statsmodels.formula.api as smf
+from statsmodels.genmod.generalized_estimating_equations import GEE
+from statsmodels.genmod.families.links import Log
+from statsmodels.genmod.families import Gamma
+import scipy
 
-def subfit_mrzecest_gee(x,parms,data):
-    """ Conditional fit"""
-    beta = x[0]
+
+
+calls = 0
+
 
 def outer_fit(x,data):
+    global calls
+    calls = calls+1
+    print(f"Entering outer fit with x = {x}")
     log10beta = x[0]
     npow = x[1]
+    area_coef = x[2]*3600*100000.
+    energy_coef = x[3]*1000
+    
+
     ndo = data.ndo
     ec_obs = data.ec_obs
     g0 = 5000.
     # external parameters are used for g()
-    g = gcalc(data.ndo,log10beta=log10beta,g0=g0)
-    gnpow = g**npow
+    ndomod = ndo_mod(data.ndo,data.d_elev_filt,area_coef,data.energy,energy_coef)    
+    g = gcalc(ndomod,log10beta=log10beta,g0=g0)
+
+
+    gnpow = g.pow(npow)
 
     # now gather the linear components. As is usual for R-style models
     # beta0 (intercept is assumed in model so nothing gathered
@@ -40,22 +56,85 @@ def outer_fit(x,data):
     # ak k = 1 ... n requires g times lagged values of stage. These
     #                appear in data as columns called z0,z1,z2,z3.
     # 
+    use_ols = True
     sb = 200. # Todo: move to inputs
-    y = data.ec_obs - sb
-    zcols = [col for col in data.columns if col.lower.startswith("z")]
-    preds = pd.concat(gpow,data[zcols].mul(g,axis=0))
+    so = 20000.
+    y = data.ec_obs 
+    y = y.clip(lower = 1e-10) 
 
-    cov_struct = sm.cov_struct.Autoregressive()
-    family = sm.families.Gamma()
-    mod = smf.gee("y ~ age + trt + base", "subject", data, cov_struct=cov_struct, family=family) 
-res = mod.fit()
-    # now formulate the 
-    error = gnpow.squeeze() - ec_obs.squeeze()
-    return (error*error).sum(axis=None)
+    if use_ols: 
+        y = y.clip(lower = sb+1e-10) 
+        y[:] = np.log((y-sb)/(so-sb))
+        ysmall = y < -2.
+    else:
+        y = y.clip(lower = sb+1e-5) 
+        ysmall = y < 1000.
+        y[:] = (y-sb)/(so-sb)        
+
+ 
+    zcols = [col for col in data.columns if col.lower().startswith("z")]
+    preds = pd.concat((0.001*gnpow,0.001*data[zcols].mul(gnpow,axis=0)),axis=1)
+    preds.columns = ['gnpow'] + zcols
+    print("NaN check found null: ",preds.isnull().any(axis=None))
+
+    X = sm.add_constant(preds)
+    y = y.loc[~ysmall]
+    X = X.loc[~ysmall,:]
+
+    
+    print("Condition Number of design matrix:", np.linalg.cond(X))
+    if calls > 600000:
+        fig, ax = plt.subplots(1)
+        ax.plot(preds.index,preds.values)
+        ax.legend(preds.columns)
+        plt.show()
+    if use_ols:
+        print("Using OLS")
+        mod = sm.OLS(y,X) 
+    else:
+        print("Creating GEE")
+        cov_struct = sm.cov_struct.Autoregressive()
+        family = sm.families.Gamma(link=Log())
+        group = np.ones_like(y)
+        mod = GEE(y,X,groups=group,family=family,cov_struct=cov_struct)  #sm.cov_struct.Independence())  
+    print("Fitting model")
+    try:
+        result = mod.fit()
+        print(result.summary())
+    except Exception as e:
+        print("Error during fitting:", e)
+        raise
+
+    predictions = result.fittedvalues
+    rss = np.sum((y - predictions) ** 2)
+
+    ypred = y.copy().to_frame()
+    ypred.columns=['data']
+    print(ypred)
+    ypred['fit'] = np.nan
+    print(ypred)
+    ypred.loc[:,'fit']=predictions
+
+    if calls > 100:
+        fig, ax = plt.subplots(1)
+        ax.plot(ypred.index,ypred.values)
+        ax.legend(['data','fit'])    
+        plt.show()
+
+    if use_ols:    
+        out = rss
+        print(f"RSS {rss}")
+    else:
+        res.scale=1.0
+        out = res.qic()
+        print(f"RSS {rss} QIC {qic}")
+    return out #qic[0]
+
 
 
 def fit_mrzecest_gee(config, elev=None, ndo=None, ec_obs=None):
     
+    print("Entering fit routine")
     if isinstance(config,str): 
         config = parse_config(config)
 
@@ -64,20 +143,25 @@ def fit_mrzecest_gee(config, elev=None, ndo=None, ec_obs=None):
     end = pd.to_datetime(config['fit_end'])
 
     elev_filt = cosine_lanczos(elev,'40h')
+    offset = elev.index.freq
+    two_dtsec = 2.*pd.Timedelta(offset, unit=offset.freqstr.lower()).total_seconds()
+    print(two_dtsec)
+    d_elev_filt = (elev_filt.shift(-1) - elev_filt.shift(1)) / two_dtsec
     elev_tidal = elev.copy() - elev_filt  # isolate tidal part
+    energy = cosine_lanczos(elev_tidal*elev_tidal,'40h')
 
     # The outer optimization is only in terms of log10beta and npow
     # The other variables are fit globally using GEE in a way that
     # does not require a starting guess.    
     try:
-        log10beta = float(config['param']['log10gbeta'][0]
+        log10beta = float(config['param']['log10gbeta'][0])
     except:
-        log10beta = float(config['param']['log10gbeta']
+        log10beta = float(config['param']['log10gbeta'])
     
     try:
-        npow = float(config['param']['npow'][0]
+        npow = float(config['param']['npow'][0])
     except:
-        npow = float(config['param']['npow'][0]
+        npow = float(config['param']['npow'][0])
 
     # Prepare fixed items and data
     filter_dt = pd.Timedelta(config['filter_setup']['dt'])
@@ -85,8 +169,8 @@ def fit_mrzecest_gee(config, elev=None, ndo=None, ec_obs=None):
     filter_k0 = int(config['filter_setup']['k0'])
     ndofreq = pd.Timedelta(ndo.index.freq)
     dstep = int(filter_dt/ndofreq) # number of rows for each Dt
-    solu_df = pd.concat((ec_obs,ndo,elev_filt,elev_tidal),axis=1) 
-    solu_df.columns = ["ec_obs","ndo","elev_filt","elev_tidal"]   
+    solu_df = pd.concat((ec_obs,ndo,elev_filt,elev_tidal,d_elev_filt,energy),axis=1) 
+    solu_df.columns = ["ec_obs","ndo","elev_filt","elev_tidal","d_elev_filt","energy"]   
     for k in range(0,filter_len):
         solu_df[f'z{k}'] = solu_df['elev_tidal'].shift( (filter_k0 - k)*dstep)
 
@@ -96,9 +180,42 @@ def fit_mrzecest_gee(config, elev=None, ndo=None, ec_obs=None):
     solu_df = solu_df.loc[start:end,:]    
     solu_df.to_csv("test.csv",index=True,header=True,float_format="%.3f")
 
-    x0 = [10.1,0.75,40000]   # log10beta, npow, area correction
+    x0 = [10.1,0.65,-12.,0.88]   # log10beta, npow, area correction
 
-    res = scipy.minimize(outer_fit_gee,x0,args=solu_df)
-    # set up filter
+    res = scipy.optimize.minimize(outer_fit,x0,args=solu_df,tol=5e-3)
+    print(res.x)
+    print(res.success)
+    print(res.message)
+    return res
+
+def obj_nlls(x):
+    
+    log10beta,npow,area_coef,energy_coef = x
+
+    x0_pass2 = (area_coef,energy_coef,log10beta,beta0,beta1,npow,filt_coefs)
+    args = (ec_obs,ndo,elev,start,end,filter_k0,filter_dt,so,sb)
+    res2 = scipy.optimize.mimize(full_ls_obj,x,args = args)
+
+def full_ls_obj(x,ec_obs,ndo,elev,start,end,filter_k0,filter_dt,so,sb):
+    (area_coef,energy_coef,log10beta,beta0,beta1,npow,filt_coefs) = x
+
+    print(f"Entering outer fit with x = {x}")
+    log10beta = x[0]
+    npow = x[1]
+    area_coef = x[2]*100000.
+    energy_coef = x[3]*1000
 
 
+    print("second pass objective")
+    
+    ec_fit=ec_est(ndo, elev,
+                  start, end,
+                  area_coef,energy_coef,
+                  log10beta,
+                  beta1, npow, filter_k0,
+                  filt_coefs, filter_dt,
+                  so, sb)
+
+    rss = np.sum((predictions-ec_obs) ** 2)
+    return rss
+    

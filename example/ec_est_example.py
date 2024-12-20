@@ -16,11 +16,13 @@ def main():
     config = "ec_est_config.yaml"
     config = parse_config(config)
 
-    ndo, elev, start, end, storage_area, log10beta, beta1, npow, filter_k0, filt_coefs, filter_dt, so, sb = ec_config(config)
-
+    ndo, elev, start, end, area_coef, log10beta, beta1, npow, filter_k0, filt_coefs, filter_dt, so, sb = ec_config(config)
+    
+    area_coef = 0.
+    energy_coef=0.
     mrzecest = ec_est(ndo, elev,
                       start, end,
-                      storage_area,
+                      area_coef, energy_coef,
                       log10beta,
                       beta1, npow, filter_k0,
                       filt_coefs, filter_dt,
