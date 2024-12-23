@@ -30,7 +30,7 @@ import scipy
 calls = 0
 
 
-def outer_fit(x,data):
+def outer_fit(x,data, return_coefs=False):
     global calls
     calls = calls+1
     print(f"Entering outer fit with x = {x}")
@@ -100,7 +100,7 @@ def outer_fit(x,data):
     print("Fitting model")
     try:
         result = mod.fit()
-        print(result.summary())
+        print(result.summary()) # this has the coefficients that I require
     except Exception as e:
         print("Error during fitting:", e)
         raise
@@ -112,10 +112,10 @@ def outer_fit(x,data):
     ypred.columns=['data']
     print(ypred)
     ypred['fit'] = np.nan
-    print(ypred)
     ypred.loc[:,'fit']=predictions
+    print(ypred)
 
-    if calls > 100000:
+    if (calls > 1000) | return_coefs:
         fig, ax = plt.subplots(1)
         ax.plot(ypred.index,ypred.values)
         ax.legend(['data','fit'])    
@@ -128,7 +128,10 @@ def outer_fit(x,data):
         res.scale=1.0
         out = res.qic()
         print(f"RSS {rss} QIC {qic}")
-    return out #qic[0]
+    if return_coefs:
+        return x, result.params, ypred #qic[0]
+    else:
+        return out #qic[0]
 
 
 
@@ -172,7 +175,7 @@ def fit_mrzecest_gee(config, elev=None, ndo=None, ec_obs=None):
     solu_df = pd.concat((ec_obs,ndo,elev_filt,elev_tidal,d_elev_filt,energy),axis=1) 
     solu_df.columns = ["ec_obs","ndo","elev_filt","elev_tidal","d_elev_filt","energy"]   
     for k in range(0,filter_len):
-        solu_df[f'z{k}'] = solu_df['elev_tidal'].shift( (filter_k0 - k)*dstep)
+        solu_df[f'z{k}'] = solu_df['elev_tidal'].shift( -(filter_k0 - k)*dstep)
 
     # Do bounds/nan check after all the filteration is done.
     start = pd.to_datetime(config['fit_start'])
@@ -183,10 +186,15 @@ def fit_mrzecest_gee(config, elev=None, ndo=None, ec_obs=None):
     x0 = [10.1,0.5,-1.,0.88]   # log10beta, npow, area correction
 
     res = scipy.optimize.minimize(outer_fit,x0,args=solu_df,tol=5e-3)
-    print(res.x)
     print(res.success)
     print(res.message)
-    return res
+    x_res, coefs, ypred = outer_fit(res.x, solu_df, return_coefs=True)
+    print(f'log10beta = {round(x_res[0],3)} npow = {round(x_res[1],3)} area_coef = {round(x_res[2]*3600*1000000.,3)} energy_coef = {round(x_res[3]*1000,3)}')
+    print(f"beta0 = {coefs['const']}")
+    print(f"beta1 = 0.001*{coefs['gnpow']}")
+    print(f"z coefs = 0.001*{[round(zval, 3) for zval in coefs[coefs.index.str.startswith('z')].values]}")
+
+    return x_res, coefs, ypred
 
 def obj_nlls(x):
     

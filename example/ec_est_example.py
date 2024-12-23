@@ -15,26 +15,50 @@ from bokeh.palettes import Magma, Inferno, Plasma, Viridis, Cividis, Colorblind,
 def main():
     config = "ec_est_config.yaml"
     config = parse_config(config)
-
-    ndo, elev, start, end, area_coef, log10beta, beta1, npow, filter_k0, filt_coefs, filter_dt, so, sb = ec_config(config)
     
-    area_coef = 0.
-    energy_coef=0.
-    mrzecest = ec_est(ndo, elev,
-                      start, end,
-                      area_coef, energy_coef,
+    ndo = pd.read_csv("../data/hist_ndo.csv",header=0,index_col=0,parse_dates=["datetime"])
+    ndo = ndo.asfreq('d')
+    ndo = ndo.to_period()
+    ndo = rhistinterp(ndo,'h',lowbound=-2000.)
+    elev = pd.read_csv("../data/mrz_hist_stage.csv",header=0,index_col=0,parse_dates=["datetime"])
+    elev = elev.asfreq('h')
+    obs_ec = pd.read_csv("../data/mrz_hist_ec.csv",header=0,index_col=0,parse_dates=["datetime"])
+    obs_ec = obs_ec.asfreq('h')
+    obs_ec = obs_ec.interpolate(limit=4)
+    
+    # align the ndo and elev dataframes
+    common_index = elev.index.intersection(ndo.index)
+    ndo = ndo.loc[common_index]
+    elev = elev.loc[common_index]
+
+    start = pd.to_datetime(config['start'])
+    end = pd.to_datetime(config['end'])
+
+    # parameters from estimation
+    log10beta = 10.217 # x[0] from ec_boundary_fit_gee.py printout
+    npow = 0.461 # x[1] from ec_boundary_fit_gee.py printout
+    area_coef = -6127433509.04 # x[2] from ec_boundary_fit_gee.py printout
+    energy_coef = 1495.91 # x[3] from ec_boundary_fit_gee.py printout
+    beta0 = 1.6828 # from const coef result 
+    beta1 = -23.0735 * 1e-3 # from gnpow coef result 
+    filter_k0 = 6 # from fitting_config.yaml
+    filt_coefs = np.array([0.111, 0.896, -0.606, 0.678, -0.745, -0.416, -0.046, 
+                           1.161, 0.321, -1.069, 0.515, -0.965, 0.576]) * 1e-3 # z{n} from output coefs
+    filter_dt = pd.Timedelta('3h') # from fitting_config.yaml
+    so = 20000. # hardwired in ec_boundary_fit_gee.py
+    sb = 200. # hardwired in ec_boundary_fit_gee.py
+
+    # ec_est(ndo, elev, start, end, area_coef,energy_coef, log10beta, beta0, beta1, npow, filter_k0, filt_coefs, filter_dt, so, sb))
+    mrzecest = ec_est(ndo, elev, start, end,
+                      area_coef,energy_coef,
                       log10beta,
-                      beta1, npow, filter_k0,
+                      beta0, beta1, npow, filter_k0,
                       filt_coefs, filter_dt,
                       so, sb)
+    obs_ec = obs_ec.loc[start:end]
     
-    
-    hist_ec = pd.read_csv(config['mrz_ec_file'], sep=',', index_col=0, parse_dates=['datetime'])
-    hist_ec = hist_ec.loc[mrzecest.index[0]:mrzecest.index[-1]]
-
     # for debugging ---------------------------------------------------------------------
-    plt_dicts = {
-                 'EC (uS/cm)': {'Historic Input': hist_ec,
+    plt_dicts = {'EC (uS/cm)': {'Historic Input': obs_ec,
                                 'Estimated EC': mrzecest}
                                 }
 
@@ -63,7 +87,7 @@ def plot_dicts(plot_dicts, range_dict_key,
 
     plt_elem_names = list(plot_dicts.keys())
 
-    h_plt = int(1200 / len(plt_elem_names))
+    h_plt = int(1000 / len(plt_elem_names))
 
     for key, pdict in plot_dicts.items():
         keys = list(pdict.keys())

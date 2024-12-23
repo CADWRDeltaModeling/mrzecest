@@ -14,7 +14,7 @@ from mrzecest.fitting_util import parse_config
 
 def gcalc(ndo,
           log10beta=10.1,
-          g0=None):
+          g0=5000.):
     """ Calculates antecedent outflow from a stream of ndo integrating using the trapezoidal method
 
     Parameters
@@ -50,6 +50,7 @@ def gcalc(ndo,
         raise ValueError("NDO time step must be 15MIN or 1HOUR. Please interpolate")
 
     beta = 10.**log10beta
+    ndo = ndo.dropna()
 
     g =  ndo.copy()
     g.columns = ['g']
@@ -58,7 +59,7 @@ def gcalc(ndo,
 
     # Set initial condition
     if g0 is None: 
-        g0 = ndo.iat[0, 0]
+        g0 = ndo['ndo'].iloc[0]
     
     # solve implicitly with trapezoidal method
     # using g_kernel to accelerate, which requires
@@ -90,6 +91,7 @@ def g_kernel(ndo,beta,g0,dt):
 def ndo_mod(ndo,d_elev_filt,area_coef,energy,energy_coef):
     ndo_mod = ndo.squeeze() + area_coef*d_elev_filt.squeeze() + energy_coef*energy.squeeze()
     ndo_mod.name = 'ndo'
+
     return ndo_mod.to_frame()
 
 
@@ -106,15 +108,18 @@ def z_sum_term(z,filter_k0,filt_coefs,filter_dt):
 
     z = z.dropna()
     z_sum = pd.Series(index=z.index,
-                      data=np.nansum(z.iloc[:, :len(filt_coefs)].values * filt_coefs, axis=1))
+                      data=np.nansum(z.iloc[:, 1:(len(filt_coefs)+1)].values * filt_coefs, axis=1))
 
     return z_sum
 
-def ec_est(ndo, elev,
-           start, end,
+# default_ec_params = {'area_coef' : 0.,
+#                      'energy_coef': 0.,
+#                      'log10beta':10.1}
+
+def ec_est(ndo, elev, start, end,
            area_coef,energy_coef,
            log10beta,
-           beta1, npow, filter_k0,
+           beta0, beta1, npow, filter_k0,
            filt_coefs, filter_dt,
            so, sb):
     """ Estimates EC given the net delta outflow and tidal elevation
@@ -146,8 +151,7 @@ def ec_est(ndo, elev,
     # Apply a cosine Lanczos filter (low-pass) to the elevation dataframe
     elev_filt = cosine_lanczos(elev, cutoff_period='40H', padtype='odd')
     elev_tidal = elev.copy() - elev_filt  # isolate tidal part for z_sum term
-    elev_tidal = elev.copy() - elev_filt  # isolate tidal part
-    energy = cosine_lanczos(elev_tidal*elev_tidal,'40h')
+    energy = cosine_lanczos(elev_tidal*elev_tidal, cutoff_period='40H', padtype='odd')
 
     # calculate subtidal effects on ndo
     offset = elev_filt.index.freq
@@ -172,7 +176,6 @@ def ec_est(ndo, elev,
     # using ec_kernel to accelerate, which requires
     # pandas conversion to/from numpy 
     print("solving for ec")
-    beta0 = 0. 
     ec.iloc[:] = ec_kernel(g.squeeze().to_numpy(),z_sum.squeeze().to_numpy(), beta0, beta1, npow, so, sb)
     print("done")
 
@@ -186,58 +189,8 @@ def ec_kernel(g, z_sum, beta0, beta1, npow, so, sb):
     ntime = len(g)
 
     for i in np.arange(1, ntime):
-        ecfrac = beta0 + beta1 * g[i]**npow + g[i] * z_sum[i] # npow1 and b1 are our parameters to tweak
+        # TODO: FIX TO BE CONSISTENT WIHT GEE.py
+        ecfrac = beta0 + beta1 * g[i]**npow + g[i]**npow * z_sum[i] # npow1 and b1 are our parameters to tweak
         ec[i] = np.exp(ecfrac)*(so-sb) + sb # solving for s term
     
     return ec
-
-
-
-
-
-def ec_config(config):
-
-    if isinstance(config,str): 
-        config = parse_config(config)
-    elif isinstance(config,dict):
-        config = config
-    else:
-        raise ValueError(f"config input needs to be either a config.yaml file or a dictionary with the correct setup")
-    
-    ndo = pd.read_csv(config['ndo_file'], sep=',', index_col=0, parse_dates=['datetime'])
-    elev = pd.read_csv(config['mrz_elev_file'], sep=',', index_col=0, parse_dates=['datetime'])
-    ndo = ndo.resample('15T').interpolate(method='linear') # make sure ndo is on 15minute period
-    elev = elev.resample('15T').interpolate(method='linear') # make sure ndo is on 15minute period
-
-    # align the ndo and elev dataframes
-    common_index = elev.index.intersection(ndo.index)
-    ndo = ndo.loc[common_index]
-    elev = elev.loc[common_index]
-
-    start = pd.to_datetime(config['start'])
-    end = pd.to_datetime(config['end'])
-
-    storage_area = config['storage_area']
-
-    try:
-        log10beta = float(config['param']['log10gbeta'][0])
-    except:
-        log10beta = float(config['param']['log10gbeta'])
-    
-    try:
-        beta1 = float(config['param']['b1'][0])
-    except:
-        beta1 = float(config['param']['b1'])
-
-    try:
-        npow = float(config['param']['npow'][0])
-    except:
-        npow = float(config['param']['npow'])
-
-    filter_k0 = float(config['filter_setup']['k0'])
-    filt_coefs = [float(ak) for ak in config['filter_setup']['afilt']]
-    filter_dt = pd.Timedelta(config['filter_setup']['dt'])
-    so = float(config['so'])
-    sb = float(config['sb'])
-
-    return ndo, elev, start, end, storage_area, log10beta, beta1, npow, filter_k0, filt_coefs, filter_dt, so, sb

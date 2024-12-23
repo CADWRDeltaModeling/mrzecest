@@ -18,7 +18,7 @@ sb: 200.
 storage_aread: 35923.48
 filter_setup:
     dt: 3h
-    k0: -6
+    k0: 6
     filter_length: 13     # 3h, -0 and 13 were well conditioned
     centering: causal   # must be 'centered' or 'causal'
 
