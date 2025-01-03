@@ -146,7 +146,19 @@ def ec_est(ndo, elev, start, end,
         ec: pd.DataFrame
             A regular time series, same sampling rate as input with.
     """
-    assert ndo.index.equals(elev.index)
+    
+    # Determine which index has the finer frequency
+    if elev.index.freq is not None and ndo.index.freq is not None:
+        if elev.index.freq < ndo.index.freq:
+            ndo = ndo.resample(elev.index.freq).interpolate(method='linear')
+        else:
+            elev = elev.resample(ndo.index.freq).interpolate(method='linear')
+
+    overlapping_index = ndo.index.intersection(elev.index)
+    ndo = ndo.loc[overlapping_index]
+    elev = elev.loc[overlapping_index]
+
+    assert(ndo.index.equals(elev.index))
 
     # Apply a cosine Lanczos filter (low-pass) to the elevation dataframe
     elev_filt = cosine_lanczos(elev, cutoff_period='40H', padtype='odd')
@@ -167,8 +179,8 @@ def ec_est(ndo, elev, start, end,
     # calculate lagged z_df term for
     z_sum = z_sum_term(elev_tidal, filter_k0, filt_coefs, filter_dt)
 
-    g = g.loc[start:end]    
-    z_sum = z_sum.loc[start:end]    
+    g = g.loc[(start-pd.Timedelta('30d')):(end+pd.Timedelta('30d'))]    
+    z_sum = z_sum.loc[(start-pd.Timedelta('30d')):(end+pd.Timedelta('30d'))]    
     ec = z_sum.copy()
     ec[:] = np.nan
 
@@ -178,6 +190,8 @@ def ec_est(ndo, elev, start, end,
     print("solving for ec")
     ec.iloc[:] = ec_kernel(g.squeeze().to_numpy(),z_sum.squeeze().to_numpy(), beta0, beta1, npow, so, sb)
     print("done")
+
+    ec = ec.loc[start:end]
 
     return ec
 
