@@ -170,8 +170,11 @@ def ec_est(ndo, elev, start, end,
     
     two_dtsec = 2.*pd.Timedelta(offset, unit=offset.freqstr.lower()).total_seconds() # dt term to be used for estimating derivative of tide
     d_elev_filt = (elev_filt.shift(-1) - elev_filt.shift(1)) / two_dtsec
+    d_elev_filt = d_elev_filt.dropna()
     
     ndomod = ndo_mod(ndo,d_elev_filt,area_coef,energy,energy_coef) 
+    ndomod = ndomod.dropna()
+    ndomod = ndomod.loc[ndomod[ndomod['ndo'] >= 0].index[0]:]
     
     # calculate g-model results
     g = gcalc(ndomod, log10beta=log10beta)
