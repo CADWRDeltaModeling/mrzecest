@@ -4,6 +4,7 @@
 tests/data
 # example data
 example/**/*.csv
+example/**/*.html
 
 # dss files
 *.dss
