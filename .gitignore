@@ -2,6 +2,9 @@
 **/.ipynb_checkpoints
 # tests data
 tests/data
+# example data
+example/**/*.csv
+
 # dss files
 *.dss
 # dask workspace
