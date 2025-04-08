@@ -1,12 +1,20 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel", "versioneer"]
+requires = ["setuptools", "wheel", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
 
 [project]
+name = "mrzecest"
+dynamic = ["version"] # Placeholder; versioneer will manage this
+description = "Martinez EC Estimator"
+readme = "README.rst"
+license = { file = "LICENSE" }
 authors = [
-  {name = "Eli Ateljevich", email = "eli@water.ca.gov"}
+  {name = "Eli Ateljevich", email = "eli@water.ca.gov"},
+  {name = "Lily Tomkovic", email = "lily.tomkovic@water.ca.gov"}
 ]
+requires-python = ">=3.9"
+
 classifiers = [
   "Programming Language :: Python",
   "Programming Language :: Python :: 3 :: Only",
@@ -17,20 +25,37 @@ classifiers = [
   "Programming Language :: Python :: Implementation :: CPython",
   "Topic :: Software Development :: Libraries :: Python Modules"
 ]
+
+keywords = ["Martinez", "Salinity", "EC", "Estimation", "Hydrodynamics"]
+
 dependencies = [
-  # package requirements go here
+    "vtools3>=3.8",
+    # "dms-datastore",
+    "xarray",
+    "scipy>=1.8,<1.11",
+    "matplotlib",
+    "pyproj",
+    "click",
+    "pandas",
+    "bokeh>=2.4",
+    "matplotlib",
+    "dask>=2022.11,<2023.5",
+    "numpy>=1.23",
+    "numba",
 ]
-description = "Martinez EC Estimator"
-dynamic = ["version"]
-license = {text = "MIT"}
-name = "mrzecest"
-readme = "README.rst"
-requires-python = ">=3.9"
 
 [project.optional-dependencies]
+doc = [
+    "sphinx",
+    "sphinx-rtd-theme",
+    "myst-parser",
+    "numpydoc"
+]
 test = [
-  "pytest",
+    "pytest>=3",
   "pytest-cov",
+    "tox",
+    "click"
 ]
 
 
@@ -60,13 +85,9 @@ package-dir = {"" = "src"}
 [tool.setuptools.package-data]
 "*" = ["*.*"]
 
-[tool.versioneer]
-VCS = "git"
-versionfile_source = "mrzecest/_version.py"
-versionfile_build = "mrzecest/_version.py"
-tag_prefix = ""
-parentdir_prefix = "mrzecest-"
-
+[tool.setuptools_scm]
+version_scheme = "post-release"
+local_scheme = "dirty-tag"
 
 [tool.pytest.ini_options]
 addopts = [

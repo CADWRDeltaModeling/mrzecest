@@ -4,16 +4,23 @@ channels:
   - defaults
 dependencies:
   - python<=3.11
-  - pip
+  - pip>=22.2
+  - dms-datastore>=0.0.16
   - ipykernel
   - jupyter_bokeh
-  # add dependencies from setup.py here
-  # - pandas # ...
+  - vtools3>=3.7.5
+  - bokeh>=2.4
+  - pandas>=2 
+  - numpy>=1.21.6
+  - matplotlib
+  - dask>=2022.11
+  - numba>=0.56
   # dev dependencies
-  # - pytest
-  # - pytest-cov
-  # - black
+  - pytest
+  - pytest-cov
+  - black
+
   # setup development environment by 
   # conda activate env_mrzecest
-  # pip install -e .
+  # pip install --no-deps -e .
 
