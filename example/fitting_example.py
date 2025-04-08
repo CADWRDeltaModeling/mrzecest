@@ -5,12 +5,6 @@ from vtools import rhistinterp
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from bokeh.io import show
-from bokeh.layouts import column
-from bokeh.models import RangeTool
-from bokeh.plotting import figure, show, output_file, save
-from bokeh.palettes import Magma, Inferno, Plasma, Viridis, Cividis, Colorblind, Bokeh
-
 
 def main():
     config = "fitting_config.yaml"
