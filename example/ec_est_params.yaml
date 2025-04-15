@@ -1,0 +1,13 @@
+so: 20000.0  # hardwired in ec_boundary_fit_gee.py
+sb: 200.0  # hardwired in ec_boundary_fit_gee.py
+area_coef: -6442979752.82 # x[2] from ec_boundary_fit_gee.py printout
+energy_coef: 1444.726 # x[3] from ec_boundary_fit_gee.py printout
+log10gbeta: 10.217
+npow: 0.46
+b0: 1.675 # from const coef result
+b1: -23.5203e-3 # from gnpow coef result
+afilt:  [0.014, 0.87, -0.734, 0.596, -0.89, -0.527, -0.151, 
+        1.083, 0.309, -1.134, 0.53, -0.996, 0.615] # multiplied by 10^-3  z{n} from output coefs
+        
+filter_k0: 6 # from fitting_config.yaml
+filter_dt: 3h # from fitting_config.yaml
