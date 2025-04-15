@@ -18,17 +18,17 @@ def main():
     config = parse_config(config)
 
     ndo = pd.read_csv(
-        "../data/hist_ndo.csv", header=0, index_col=0, parse_dates=["datetime"]
+        "./data/hist_ndo.csv", header=0, index_col=0, parse_dates=["datetime"]
     )
     ndo = ndo.asfreq("d")
     ndo = ndo.to_period()
     ndo = rhistinterp(ndo, "h", lowbound=-2000.0)
     elev = pd.read_csv(
-        "../data/mrz_hist_stage.csv", header=0, index_col=0, parse_dates=["datetime"]
+        "./data/mrz_hist_stage.csv", header=0, index_col=0, parse_dates=["datetime"]
     )
     elev = elev.asfreq("h")
     obs_ec = pd.read_csv(
-        "../data/mrz_hist_ec.csv", header=0, index_col=0, parse_dates=["datetime"]
+        "./data/mrz_hist_ec.csv", header=0, index_col=0, parse_dates=["datetime"]
     )
     obs_ec = obs_ec.asfreq("h")
     obs_ec = obs_ec.interpolate(limit=4)
