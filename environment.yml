@@ -15,6 +15,7 @@ dependencies:
   - matplotlib
   - dask>=2022.11
   - numba>=0.56
+  - pyhecdss
   # dev dependencies
   - pytest
   - pytest-cov
