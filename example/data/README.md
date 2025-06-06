@@ -1,6 +1,6 @@
 # Historical Net Delta Outflow
 
-File ``hist_ndo.csv`` is from DAYFLOW estimation has a daily frequency and units of cfs
+File ``hypothetical_ndo.csv`` is calculated from a hypothetical scenario and has a daily frequency and units of cfs
 
 # Historical Martinez Salinity
 
