@@ -18,10 +18,10 @@ This is an imperfect specification given the diversity of Consumptive Use calcul
 NDOI is then modified by the tidal energy and tidal filter in the **ndo_mod** function.
 
 $$
-NDO_{mod} = NDOI + c_{area} \left<z\right> + c_{energy} \left<\left(z-\left<z\right>\right)^2\right>
+NDO_{mod} = NDOI + c_{area} \langle z \rangle + c_{energy} \langle (z - \langle z \rangle )^2 \rangle
 $$
 
-where $\left<z\right>$ is cosine-lancsoz filtered tidal data at Martinez (aka subtide), $c_{area}$ is the area coeficient for the estuary, $c_{energy}$ is the tidal energy coefficient, and $\left<\left(z-\left<z\right>\right)^2\right>$ is tidal energy at Martinez.
+where $\langle z \rangle$ is cosine-lancsoz filtered tidal data at Martinez (aka subtide), $c_{area}$ is the area coeficient for the estuary, $c_{energy}$ is the tidal energy coefficient, and $\langle (z - \langle z \rangle )^2 \rangle$ is tidal energy at Martinez.
 
 #### G-Model
 
