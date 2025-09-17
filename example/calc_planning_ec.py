@@ -90,8 +90,6 @@ sb = params["sb"]
 mrzecest = ec_est(
     ndo,
     elev,
-    start,
-    end,
     area_coef,
     energy_coef,
     log10beta,
@@ -103,6 +101,8 @@ mrzecest = ec_est(
     filter_dt,
     so,
     sb,
+    start=start,
+    end=end,
 )
 
 # Plot EC

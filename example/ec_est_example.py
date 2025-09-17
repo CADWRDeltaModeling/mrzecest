@@ -73,12 +73,9 @@ def main():
     so = 20000.0  # hardwired in ec_boundary_fit_gee.py
     sb = 200.0  # hardwired in ec_boundary_fit_gee.py
 
-    # ec_est(ndo, elev, start, end, area_coef,energy_coef, log10beta, beta0, beta1, npow, filter_k0, filt_coefs, filter_dt, so, sb))
     mrzecest = ec_est(
         ndo,
         elev,
-        start,
-        end,
         area_coef,
         energy_coef,
         log10beta,
@@ -90,6 +87,8 @@ def main():
         filter_dt,
         so,
         sb,
+        start=start,
+        end=end,
     )
     obs_ec = obs_ec.loc[start:end]
 

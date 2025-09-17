@@ -53,12 +53,9 @@ def main():
     start = pd.to_datetime("2006-01-01")
     end = pd.to_datetime("2007-01-01")
 
-    # ec_est(ndo, elev, start, end, area_coef,energy_coef, log10beta, beta0, beta1, npow, filter_k0, filt_coefs, filter_dt, so, sb))
     mrzecest = ec_est(
         ndo15,
         elev,
-        start,
-        end,
         area_coef,
         energy_coef,
         log10beta,
@@ -70,6 +67,8 @@ def main():
         filter_dt,
         so,
         sb,
+        start=start,
+        end=end,
     )
     obs_ec = obs_ec.loc[start:end]
     pred_df = pred_df.loc[start:end]

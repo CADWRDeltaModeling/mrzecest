@@ -107,7 +107,11 @@ def z_sum_term(z, filter_k0, filt_coefs, filter_dt):
     df_freq = pd.Timedelta(z.index.freq)
     d_step = int(filter_dt / df_freq)  # number of rows for each Dt
 
-    z.columns = ["elev_tidal"]
+    # Ensure z is a DataFrame with column 'elev_tidal'
+    if isinstance(z, pd.Series):
+        z = z.to_frame(name="elev_tidal")
+    else:
+        z.columns = ["elev_tidal"]
 
     for k in range(0, filter_len):
         z[f"z{k}"] = z["elev_tidal"].shift(-int((filter_k0 - k) * d_step))
@@ -131,8 +135,6 @@ def z_sum_term(z, filter_k0, filt_coefs, filter_dt):
 def ec_est(
     ndo,
     elev,
-    start,
-    end,
     area_coef,
     energy_coef,
     log10beta,
@@ -144,30 +146,49 @@ def ec_est(
     filter_dt,
     so,
     sb,
+    start=None,
+    end=None,
 ):
-    """Estimates EC given the net delta outflow and tidal elevation
+    """
+    Estimate electrical conductivity (EC) at the Martinez boundary using the g-model.
 
     Parameters
     ----------
-        ndo: pd.DataFrame
-            A regular time series. Must be 15MIN, 1HOUR.
-
-        elev: pd.DataFrame
-            A regular time series. Must be 15MIN, 1HOUR.
-
-        filter_k0: float
-            Filter parameter k0.
-
-        filt_coefs: list or array
-            Filter coefficients.
-
-        filter_dt: pd.Timedelta
-            Filter time step.
+    ndo : pandas.DataFrame or pandas.Series
+        Net Delta Outflow (NDO) as a regular time series in cfs (must be 15MIN or 1HOUR frequency).
+    elev : pandas.DataFrame or pandas.Series
+        Water surface elevation as a regular time series in ft (must be 15MIN or 1HOUR frequency).
+    area_coef : float
+        Coefficient for the area term in the NDO modification.
+    energy_coef : float
+        Coefficient for the energy term in the NDO modification.
+    log10beta : float
+        Log10 of the g-model parameter beta.
+    beta0 : float
+        Intercept parameter for the EC kernel.
+    beta1 : float
+        Slope parameter for the EC kernel.
+    npow : float
+        Exponent parameter for the EC kernel.
+    filter_k0 : float
+        Filter parameter k0 for the lagged elevation sum.
+    filt_coefs : array-like
+        Filter coefficients for the lagged elevation sum.
+    filter_dt : pandas.Timedelta
+        Time step for the filter.
+    so : float
+        Ocean salinity (upper bound for EC).
+    sb : float
+        Base salinity (lower bound for EC).
+    start : pandas.Timestamp or None, optional
+        Start time for the output EC series. If None, uses the earliest time in the input.
+    end : pandas.Timestamp or None, optional
+        End time for the output EC series. If None, uses the latest time in the input.
 
     Returns
     -------
-        ec: pd.DataFrame
-            A regular time series, same sampling rate as input with.
+    ec : pandas.Series
+        Estimated electrical conductivity time series at the Martinez boundary, indexed by time.
     """
 
     # Determine which index has the finer frequency
@@ -183,7 +204,21 @@ def ec_est(
 
     assert ndo.index.equals(elev.index)
 
-    # TODO: check that elev has at least 30 days on either side of it
+    # Set default start and end times if not provided
+    if start is None:
+        start = min(ndo.index.min(), elev.index.min()) + pd.Timedelta("35D")
+    else:
+        if elev.index.min() > start - pd.Timedelta("30D"):
+            raise ValueError(
+                "elev.index.min() must be at least 30 days before start. The length of ec won't match the ec_kernel output"
+            )
+    if end is None:
+        end = max(ndo.index.max(), elev.index.max()) - pd.Timedelta("35D")
+    else:
+        if elev.index.max() < end + pd.Timedelta("30D"):
+            raise ValueError(
+                "elev.index.max() must be at least 30 days after end. The length of ec won't match the ec_kernel output"
+            )
 
     # Apply a cosine Lanczos filter (low-pass) to the elevation dataframe
     elev_filt = cosine_lanczos(elev, cutoff_period="40H", padtype="odd")
@@ -218,8 +253,6 @@ def ec_est(
     # using ec_kernel to accelerate, which requires
     # pandas conversion to/from numpy
     print("solving for ec")
-    # TODO: check that elev has at least 30 days on either side of it
-    # - if that's not satisfied then the length of ec won't match teh ec_kernel output
     ec.iloc[:] = ec_kernel(
         g.squeeze().to_numpy(), z_sum.squeeze().to_numpy(), beta0, beta1, npow, so, sb
     )

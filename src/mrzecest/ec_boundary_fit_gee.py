@@ -230,8 +230,6 @@ def full_ls_obj(x, ec_obs, ndo, elev, start, end, filter_k0, filter_dt, so, sb):
     ec_fit = ec_est(
         ndo,
         elev,
-        start,
-        end,
         area_coef,
         energy_coef,
         log10beta,
@@ -242,6 +240,8 @@ def full_ls_obj(x, ec_obs, ndo, elev, start, end, filter_k0, filter_dt, so, sb):
         filter_dt,
         so,
         sb,
+        start=start,
+        end=end,
     )
 
     rss = np.sum((predictions - ec_obs) ** 2.0)
