@@ -190,7 +190,7 @@ def fit_mrzecest_gee(config, elev=None, ndo=None, ec_obs=None, plot_fits=False):
     start = pd.to_datetime(config["fit_start"])
     end = pd.to_datetime(config["fit_end"])
     solu_df = solu_df.loc[start:end, :]
-    solu_df.to_csv("test.csv", index=True, header=True, float_format="%.3f")
+    # solu_df.to_csv("test.csv", index=True, header=True, float_format="%.3f")
 
     x0 = [10.1, 0.5, -1.0, 0.88]  # log10beta, npow, area correction
 
