@@ -5,8 +5,9 @@ tests/data
 # example data
 example/**/*.csv
 !example/data/hypothetical_ndo.csv
-!example/data/mrz_hist_ec.csv
-!example/data/mrz_hist_stage.csv
+!example/data/dsm2_mrz_hist_ec.csv
+!example/data/dsm2_mrz_hist_stage.csv
+!example/data/dsm2_ndo_hist.csv
 example/**/*.html
 
 # dss files
