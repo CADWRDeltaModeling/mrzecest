@@ -9,7 +9,7 @@ import os
 
 import numba
 
-from mrzecest.fitting_util import parse_config
+from mrzecest.fitting_util import parse_config, read_fit_yaml
 
 
 def gcalc(ndo, log10beta=10.1, g0=5000.0):
@@ -130,6 +130,41 @@ def z_sum_term(z, filter_k0, filt_coefs, filter_dt):
 # default_ec_params = {'area_coef' : 0.,
 #                      'energy_coef': 0.,
 #                      'log10beta':10.1}
+
+
+def ec_est_yaml(ndo, elev, yaml_fn, start=None, end=None):
+
+    (
+        area_coef,
+        energy_coef,
+        log10beta,
+        beta0,
+        beta1,
+        npow,
+        filter_k0,
+        filt_coefs,
+        filter_dt,
+        so,
+        sb,
+    ) = read_fit_yaml(yaml_fn)
+
+    return ec_est(
+        ndo,
+        elev,
+        area_coef,
+        energy_coef,
+        log10beta,
+        beta0,
+        beta1,
+        npow,
+        filter_k0,
+        filt_coefs,
+        filter_dt,
+        so,
+        sb,
+        start=start,
+        end=end,
+    )
 
 
 def ec_est(
