@@ -236,6 +236,10 @@ def ec_est(
     overlapping_index = ndo.index.intersection(elev.index)
     ndo = ndo.loc[overlapping_index]
     elev = elev.loc[overlapping_index]
+    elev.index.freq = elev.index.inferred_freq
+    print(
+        f"Tidal mean is {elev.mean().values[0]:.2f} ft, range is {elev.max().values[0]-elev.min().values[0]:.2f} ft"
+    )
 
     assert ndo.index.equals(elev.index)
 
@@ -256,9 +260,9 @@ def ec_est(
             )
 
     # Apply a cosine Lanczos filter (low-pass) to the elevation dataframe
-    elev_filt = cosine_lanczos(elev, cutoff_period="40H", padtype="odd")
+    elev_filt = cosine_lanczos(elev, "40h")
     elev_tidal = elev.copy() - elev_filt  # isolate tidal part for z_sum term
-    energy = cosine_lanczos(elev_tidal * elev_tidal, cutoff_period="40H", padtype="odd")
+    energy = cosine_lanczos(elev_tidal * elev_tidal, "40h")
 
     # calculate subtidal effects on ndo
     offset = elev_filt.index.freq
@@ -269,10 +273,16 @@ def ec_est(
     d_elev_filt = (elev_filt.shift(-1) - elev_filt.shift(1)) / two_dtsec
     d_elev_filt = d_elev_filt.dropna()
 
+    print(
+        f"NDO mean is {ndo.mean():.0f} cfs, max is {ndo.max():.0f} cfs, min is {ndo.min():.0f} cfs"
+    )
     ndomod = ndo_mod(ndo, d_elev_filt, area_coef, energy, energy_coef)
     ndomod = ndomod.dropna()
     ndomod = ndomod.loc[ndomod[ndomod["ndo"] >= 0].index[0] :]
 
+    print(
+        f"Modified NDO mean is {ndomod.mean().values[0]:.0f} cfs, max is {ndomod.max().values[0]:.0f} cfs, min is {ndomod.min().values[0]:.0f} cfs"
+    )
     # calculate g-model results
     g = gcalc(ndomod, log10beta=log10beta)
 
@@ -284,6 +294,11 @@ def ec_est(
     ec = z_sum.copy()
     ec[:] = np.nan
 
+    assert g.index.equals(z_sum.index), (
+        "Index mismatch between g and z_sum. This is likely because the tidal data did not extend beyond 40 days before the 'start' time. "
+        "Ensure that the tidal data covers at least 40 days prior to 'start' so that the tidal energy is not NaN when computing the z_sum term."
+    )
+
     # Calculate EC
     # using ec_kernel to accelerate, which requires
     # pandas conversion to/from numpy
@@ -294,6 +309,9 @@ def ec_est(
     print("done")
 
     ec = ec.loc[start:end]
+    print(
+        f"Estimated EC mean is {ec.mean():.0f} psu, max is {ec.max():.0f} psu, min is {ec.min():.0f} psu"
+    )
 
     return ec
 
