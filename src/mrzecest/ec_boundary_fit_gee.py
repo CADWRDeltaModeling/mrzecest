@@ -30,7 +30,7 @@ import scipy
 calls = 0
 
 
-def outer_fit(x, data, return_coefs=False):
+def outer_fit(x, data, return_coefs=False, plot_fits=False):
     global calls
     calls = calls + 1
     print(f"Entering outer fit with x = {x}")
@@ -78,22 +78,25 @@ def outer_fit(x, data, return_coefs=False):
     y = y.loc[~ysmall]
     X = X.loc[~ysmall, :]
 
-    print("Condition Number of design matrix:", np.linalg.cond(X))
-    if calls > 600000:
+    mask = ~X.isnull().any(axis=1)
+    X_clean = X[mask]
+    y_clean = y[mask]
+    print("Condition Number of design matrix:", np.linalg.cond(X_clean))
+    if (calls > 600000) and plot_fits:
         fig, ax = plt.subplots(1)
         ax.plot(preds.index, preds.values)
         ax.legend(preds.columns)
         plt.show()
     if use_ols:
         print("Using OLS")
-        mod = sm.OLS(y, X)
+        mod = sm.OLS(y_clean, X_clean)
     else:
         print("Creating GEE")
         cov_struct = sm.cov_struct.Autoregressive()
         family = sm.families.Gamma(link=Log())
-        group = np.ones_like(y)
+        group = np.ones_like(y_clean)
         mod = GEE(
-            y, X, groups=group, family=family, cov_struct=cov_struct
+            y_clean, X_clean, groups=group, family=family, cov_struct=cov_struct
         )  # sm.cov_struct.Independence())
     print("Fitting model")
     try:
@@ -104,16 +107,16 @@ def outer_fit(x, data, return_coefs=False):
         raise
 
     predictions = result.fittedvalues
-    rss = np.sum((y - predictions) ** 2)
+    rss = np.sum((y_clean - predictions) ** 2)
 
-    ypred = y.copy().to_frame()
+    ypred = y_clean.copy().to_frame()
     ypred.columns = ["data"]
     print(ypred)
     ypred["fit"] = np.nan
     ypred.loc[:, "fit"] = predictions
     print(ypred)
 
-    if (calls > 1000) | return_coefs:
+    if ((calls > 1000) | return_coefs) and plot_fits:
         fig, ax = plt.subplots(1)
         ax.plot(ypred.index, ypred.values)
         ax.legend(["data", "fit"])
@@ -132,7 +135,7 @@ def outer_fit(x, data, return_coefs=False):
         return out  # qic[0]
 
 
-def fit_mrzecest_gee(config, elev=None, ndo=None, ec_obs=None):
+def fit_mrzecest_gee(config, elev=None, ndo=None, ec_obs=None, plot_fits=False):
 
     print("Entering fit routine")
     if isinstance(config, str):
@@ -194,7 +197,9 @@ def fit_mrzecest_gee(config, elev=None, ndo=None, ec_obs=None):
     res = scipy.optimize.minimize(outer_fit, x0, args=solu_df, tol=5e-3)
     print(res.success)
     print(res.message)
-    x_res, coefs, ypred = outer_fit(res.x, solu_df, return_coefs=True)
+    x_res, coefs, ypred = outer_fit(
+        res.x, solu_df, return_coefs=True, plot_fits=plot_fits
+    )
     print(
         f"log10beta = {round(x_res[0],3)} npow = {round(x_res[1],3)} area_coef = {round(x_res[2]*3600*1000000.,3)} energy_coef = {round(x_res[3]*1000,3)}"
     )
