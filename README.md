@@ -43,10 +43,10 @@ this is solved in ec_boundary.py using the **gcalc** function.
 #### EC Formula
 
 $$
-\ln\left( \frac{S(t) - S_b}{S_0 - S_b} \right) = \beta_1 \, g(t)^n + g(t) \sum_{k=0}^{n_k-1} a_k \, z\left(t + k_0 \Delta t - k \Delta t\right)
+\ln\left( \frac{S(t) - S_b}{S_0 - S_b} \right) = \beta_1 \ g(t)^n + g(t) \sum_{k=0}^{n_k-1} a_k \ z\left(t + k_0 \Delta t - k \Delta t\right)
 $$
 
-where $S$ is salinity, $S(t)$ is salinity at the current timestep, $S_o$ is the ocean salinity, and $S_b$ is river salinity, $/beta_1$ is the g-model weight (unrelated to $\beta$ found in the g-model formulation), $n$ is the n-power coeffecient, $a_k$ is the $k^{th}$ coefficient for the z value at that timestep, the values of k themselves generate the time offsets for this term to be added to. The EC formula is solved in the **ec_kernel** function.
+where $S$ is salinity, $S(t)$ is salinity at the current timestep, $S_0$ is the ocean salinity, and $S_b$ is river salinity. $\beta_1$ is the g-model weight (unrelated to $\beta$ in the g-model formulation), $n$ is the n-power coefficient, and $a_k$ is the $k^{th}$ coefficient for the $z$ value at that timestep. The values of $k$ generate the time offsets for this term. The EC formula is solved in the **ec_kernel** function.
 
 ##### $Z_{sum}$ term
 
