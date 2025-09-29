@@ -145,6 +145,10 @@ def fit_mrzecest_gee(config, elev=None, ndo=None, ec_obs=None, plot_fits=False):
     start = pd.to_datetime(config["fit_start"])
     end = pd.to_datetime(config["fit_end"])
 
+    elev.index.freq = elev.index.inferred_freq
+    ndo.index.freq = ndo.index.inferred_freq
+    ec_obs.index.freq = ec_obs.index.inferred_freq
+
     elev_filt = cosine_lanczos(elev, "40h")
     offset = elev.index.freq
     two_dtsec = 2.0 * pd.Timedelta(offset, unit=offset.freqstr.lower()).total_seconds()
