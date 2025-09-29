@@ -164,7 +164,7 @@ def fit_mrzecest_gee(config, elev=None, ndo=None, ec_obs=None, plot_fits=False):
     try:
         npow = float(config["param"]["npow"][0])
     except:
-        npow = float(config["param"]["npow"][0])
+        npow = float(config["param"]["npow"])
 
     # Prepare fixed items and data
     filter_dt = pd.Timedelta(config["filter_setup"]["dt"])
