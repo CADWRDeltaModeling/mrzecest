@@ -37,6 +37,8 @@ def gcalc(ndo, log10beta=10.1, g0=5000.0):
     """
 
     ti = ndo.index.freq
+    if ti is None:
+        ti = pd.Timedelta(ndo.index.inferred_freq)
     dt = 1
     nstep = len(ndo)
     if ti == pd.Timedelta("15MIN"):
@@ -226,6 +228,12 @@ def ec_est(
         Estimated electrical conductivity time series at the Martinez boundary, indexed by time.
     """
 
+    # Convert DataFrame to Series if only one column
+    if isinstance(ndo, pd.DataFrame) and ndo.shape[1] == 1:
+        ndo = ndo.iloc[:, 0]
+    if isinstance(elev, pd.DataFrame) and elev.shape[1] == 1:
+        elev = elev.iloc[:, 0]
+
     # Determine which index has the finer frequency
     if elev.index.freq is not None and ndo.index.freq is not None:
         if elev.index.freq < ndo.index.freq:
@@ -238,7 +246,7 @@ def ec_est(
     elev = elev.loc[overlapping_index]
     elev.index.freq = elev.index.inferred_freq
     print(
-        f"Tidal mean is {elev.mean().values[0]:.2f} ft, range is {elev.max().values[0]-elev.min().values[0]:.2f} ft"
+        f"Tidal mean is {elev.mean():.2f} ft, range is {elev.max()-elev.min():.2f} ft"
     )
 
     assert ndo.index.equals(elev.index)
