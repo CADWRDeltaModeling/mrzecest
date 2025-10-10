@@ -29,7 +29,7 @@ def read_fit_yaml(yml):
     beta0 = config["b0"]
     beta1 = config["b1"]
     filter_k0 = config["filter_k0"]
-    filt_coefs = [an * 1e-3 for an in config["afilt"]]
+    filt_coefs = [an for an in config["afilt"]]
     filter_dt = pd.Timedelta(config["filter_dt"])
     so = config["so"]
     sb = config["sb"]
@@ -85,7 +85,7 @@ def write_fit_yaml(x_res, coefs, k0, fitting_config, yml):
         "b0": float(coefs["const"]),  # from const coef result
         "b1": float(coefs["gnpow"] * 0.001),  # from gnpow coef result
         "afilt": [
-            float(ak * 1e3) for ak in coefs[coefs.index.str.startswith("z")].values
+            float(ak * 1e-3) for ak in coefs[coefs.index.str.startswith("z")].values
         ],  # z{n} from output coefs
         "filter_k0": int(k0),  # from fitting_config yaml file
         "filter_dt": "3h",  # from fitting_config.yaml
