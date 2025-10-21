@@ -25,8 +25,12 @@ where $\langle z \rangle$ is cosine-lancsoz filtered tidal data at Martinez (aka
 
 #### G-Model
 
-The G model is specified as:
+The G model, due to Denton, evolves "antecedent outflow" `g(t)` using the following equation:
+$$
+\frac{dg}{dt} = \frac{g(t)\,\big(q(t) - g(t)\big)}{\beta}
+$$
 
+Which can be discretized using a Crank Nicolson scheme (which tends to be sufficiently positivity preserving)
 $$
 \frac{g_{n+1}-g_n}{\Delta t} = \frac{1}{2}\left[\frac{g_n(q_n-g_n)}{\beta}+\frac{g_{n+1}\left(q_{n+1}-g_{n+1}\right)}{\beta}\right]
 $$
