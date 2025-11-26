@@ -234,11 +234,23 @@ def ec_est(
     if isinstance(elev, pd.DataFrame) and elev.shape[1] == 1:
         elev = elev.iloc[:, 0]
 
+    # Normalize indices to remove seconds and microseconds for proper alignment
+    # Convert PeriodIndex to DatetimeIndex if needed, then normalize
+    if isinstance(ndo.index, pd.PeriodIndex):
+        ndo.index = ndo.index.to_timestamp()
+    if isinstance(ndo.index, pd.DatetimeIndex):
+        ndo.index = ndo.index.map(lambda x: x.replace(second=0, microsecond=0))
+    
+    if isinstance(elev.index, pd.PeriodIndex):
+        elev.index = elev.index.to_timestamp()
+    if isinstance(elev.index, pd.DatetimeIndex):
+        elev.index = elev.index.map(lambda x: x.replace(second=0, microsecond=0))
+
     # Determine which index has the finer frequency
     if elev.index.freq is not None and ndo.index.freq is not None:
         if elev.index.freq < ndo.index.freq:
             ndo = ndo.resample(elev.index.freq).interpolate(method="linear")
-        else:
+        elif elev.index.freq != ndo.index.freq:
             elev = elev.resample(ndo.index.freq).interpolate(method="linear")
 
     overlapping_index = ndo.index.intersection(elev.index)
