@@ -38,7 +38,13 @@ def gcalc(ndo, log10beta=10.1, g0=5000.0):
 
     ti = ndo.index.freq
     if ti is None:
-        ti = pd.Timedelta(ndo.index.inferred_freq)
+        freq_str = ndo.index.inferred_freq
+        # If the string is just a unit ('h', 'D', 'W', etc.), prepend '1'
+        # This converts 'h' to '1h', which pd.Timedelta can parse.
+        if freq_str and freq_str.isalpha():
+            ti = pd.Timedelta("1 " + freq_str)
+        else:
+            ti = pd.Timedelta(freq_str)
     dt = 1
     nstep = len(ndo)
     if ti == pd.Timedelta("15MIN"):
