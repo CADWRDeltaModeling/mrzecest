@@ -1,194 +1,172 @@
-from mrzecest.ec_boundary import *
-from mrzecest.fitting_util import *
-from vtools import rhistinterp
+"""Example: run MRZ EC estimator from YAML model config and plot results (Bokeh).
 
+This is intentionally a *script* (no CLI): edit constants below.
+
+It mirrors the *data + prep* approach used in fitting_example.py:
+  - NDO: daily values treated as period averages; conservative upsample via vtools.rhistinterp
+  - Stage: 15-min (already filled) and padded to support the estimator's filters
+  - Observed EC: used only for comparison in plots
+
+Notes on Bokeh:
+  - In Bokeh >= 3.6 (per migration notes), RangeTool is active by default and is no longer
+    a "multi GestureTool", so do NOT set toolbar.active_multi to the RangeTool.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import numpy as np
 import pandas as pd
 
-import matplotlib.pyplot as plt
-
-from bokeh.io import show
+from bokeh.io import output_file, save, show
 from bokeh.layouts import column
 from bokeh.models import RangeTool
-from bokeh.plotting import figure, show, output_file, save
-from bokeh.palettes import Magma, Inferno, Plasma, Viridis, Cividis, Colorblind, Bokeh
+from bokeh.plotting import figure
+
+from vtools import rhistinterp, hours
+
+from mrzecest.ec_boundary import ec_est_yaml
 
 
-def main():
-    config = "ec_est_config.yaml"
-    config = parse_config(config)
+# -----------------
+# User-edit settings
+# -----------------
+HERE = Path(__file__).resolve().parent
+DATA_DIR = HERE / "data"
+MODEL_YAML = HERE / "model.yaml"
 
+# Evaluation window (inclusive endpoints for slicing)
+EVAL_START = pd.Timestamp("2006-01-01")
+EVAL_END = pd.Timestamp("2025-01-01")
+
+# Padding for stage around the evaluation window to support any internal filtering
+# (fitting_example.py uses 9d after discovering edge effects)
+STAGE_PAD = pd.Timedelta("9d")
+
+# Plot output: set WRITE_HTML=True to save an HTML file; otherwise opens a browser tab
+WRITE_HTML = False
+HTML_OUT = HERE / "ec_est_example.html"
+
+
+def _read_inputs_15min() -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Read NDO, stage, and observed EC using the same approach as fitting_example.py."""
+
+    # --- NDO: daily -> PeriodIndex -> conservative upsample to 15-min
     ndo = pd.read_csv(
-        "./data/hist_ndo.csv", header=0, index_col=0, parse_dates=["datetime"]
-    )
+        DATA_DIR / "dsm2_ndo_hist.csv",
+        header=0,
+        index_col=0,
+        parse_dates=["datetime"],
+    ).iloc[:, 0]
+
     ndo = ndo.asfreq("d")
-    ndo = ndo.to_period()
-    ndo = rhistinterp(ndo, "h", lowbound=-2000.0)
+    ndo = ndo.to_period("d")
+    ndo15 = rhistinterp(ndo, "15min", lowbound=-2000.0)
+    ndo15 = ndo15.asfreq("15min")
+
+
+    # --- Stage (already filled)
     elev = pd.read_csv(
-        "./data/mrz_hist_stage.csv", header=0, index_col=0, parse_dates=["datetime"]
-    )
-    elev = elev.asfreq("h")
+        DATA_DIR / "dms_mrz_elev_filled.csv",
+        header=0,
+        index_col=0,
+        parse_dates=["datetime"],
+    ).iloc[:, 0]
+    elev = elev.asfreq("15min")
+
+    # --- Observed EC (for comparison only)
     obs_ec = pd.read_csv(
-        "./data/mrz_hist_ec.csv", header=0, index_col=0, parse_dates=["datetime"]
-    )
-    obs_ec = obs_ec.asfreq("h")
-    obs_ec = obs_ec.interpolate(limit=4)
+        DATA_DIR / "dms_mrz@upper_ec.csv",
+        header=0,
+        index_col=0,
+        parse_dates=["datetime"],
+        comment="#",
+    ).iloc[:, 0]
 
-    # align the ndo and elev dataframes
-    common_index = elev.index.intersection(ndo.index)
-    ndo = ndo.loc[common_index]
-    elev = elev.loc[common_index]
+    # fitting_example.py does a short interpolation then clips to >= 201
+    obs_ec15 = obs_ec.resample("15min").interpolate(limit=4)
+    obs_ec15 = obs_ec15.clip(lower=201).resample("15min").asfreq("15min")
 
-    start = pd.to_datetime(config["start"])
-    end = pd.to_datetime(config["end"])
+    return ndo15, elev, obs_ec15
 
-    # parameters from estimation
-    log10beta = 10.217  # x[0] from ec_boundary_fit_gee.py printout
-    npow = 0.461  # x[1] from ec_boundary_fit_gee.py printout
-    area_coef = -6127433509.04  # x[2] from ec_boundary_fit_gee.py printout
-    energy_coef = 1495.91  # x[3] from ec_boundary_fit_gee.py printout
-    beta0 = 1.6828  # from const coef result
-    beta1 = -23.0735 * 1e-3  # from gnpow coef result
-    filter_k0 = 6  # from fitting_config.yaml
-    filt_coefs = (
-        np.array(
-            [
-                0.111,
-                0.896,
-                -0.606,
-                0.678,
-                -0.745,
-                -0.416,
-                -0.046,
-                1.161,
-                0.321,
-                -1.069,
-                0.515,
-                -0.965,
-                0.576,
-            ]
+
+def _validate_timebase(name: str, s: pd.Series, freq: str) -> None:
+    if not isinstance(s.index, pd.DatetimeIndex):
+        raise TypeError(f"{name} must have a DatetimeIndex, got {type(s.index)}")
+    if s.index.freq is None:
+        # Pandas often drops .freq; enforce via inferred or explicit asfreq in upstream prep
+        inferred = pd.infer_freq(s.index)
+        if inferred != freq:
+            raise ValueError(
+                f"{name} index has no .freq and inferred_freq={inferred!r}, expected {freq!r}"
+            )
+    # also ensure uniform spacing
+    deltas = s.index.to_series().diff().dropna()
+    expected = pd.Timedelta(freq)
+    if not (deltas == expected).all():
+        bad = deltas[deltas != expected].iloc[:5]
+        raise ValueError(
+            f"{name} is not uniformly spaced at {freq}. First mismatches:\n{bad}"
         )
-        * 1e-3
-    )  # z{n} from output coefs
-    filter_dt = pd.Timedelta("3h")  # from fitting_config.yaml
-    so = 20000.0  # hardwired in ec_boundary_fit_gee.py
-    sb = 200.0  # hardwired in ec_boundary_fit_gee.py
-
-    mrzecest = ec_est(
-        ndo,
-        elev,
-        area_coef,
-        energy_coef,
-        log10beta,
-        beta0,
-        beta1,
-        npow,
-        filter_k0,
-        filt_coefs,
-        filter_dt,
-        so,
-        sb,
-        start=start,
-        end=end,
-    )
-    obs_ec = obs_ec.loc[start:end]
-
-    # for debugging ---------------------------------------------------------------------
-    plt_dicts = {"EC (uS/cm)": {"Historic Input": obs_ec, "Estimated EC": mrzecest}}
-
-    plot_dicts(
-        plt_dicts, "EC (uS/cm)"
-    )  # ------------------------------------------------
-
-    print("debug")
 
 
-def plot_dicts(plot_dicts, range_dict_key, save_filename=None, date_range=None):
-    """generic plot function
+def _plot_bokeh(
+    *,
+    ec_obs: pd.Series,
+    ec_est: pd.Series,
+    elev: pd.Series,
+    ndo: pd.Series,
+    title: str = "MRZ EC estimate",
+):
+    """Three stacked time-series panels + a RangeTool scroller."""
 
-    Parameters
-    ----------
-    plot_dicts: dict
+    # Align x-range limits to the evaluation window
+    first = ec_est.index[0]
+    last = ec_est.index[-1]
 
-        dictionary of dictionaries. each dictionary uses they key as the plot pane title and has dataframes within it whose keys correspond to the legend label. Ex: plot_dicts = {'Stage':{'Original': stage_df, 'SLR': slr_stage_df}, 'Flow':{'Net Delta Outflow':ndo_df}}
-
-    range_dict_key: str
-
-        name of plot panel to use as range slider. Needs to be a key that exists in plot_dicts (ex: 'Stage')
-
-    """
-
-    colors = [
-        "#1f77b4",
-        "#ff7f0e",
-        "#2ca02c",
-        "#9467bd",
-        "#8c564b",
-        "#e377c2",
-        "#7f7f7f",
-        "#bcbd22",
-        "#17becf",
-    ]
-    # default colors same as sns.color_palette("tab10", n_colors=10).as_hex() # '#d62728' is red
-
-    plt_elem_names = list(plot_dicts.keys())
-
-    h_plt = int(1000 / len(plt_elem_names))
-
-    for key, pdict in plot_dicts.items():
-        keys = list(pdict.keys())
-
-        min_y, max_y = np.inf, -np.inf
-        if date_range is not None:
-            for k, df in pdict.items():
-                pdict[k] = pd.Series(df.loc[date_range[0] : date_range[1]])
-        for k, df in pdict.items():
-            if min(df.values) < min_y:
-                min_y = min(df.values)
-            if max(df.values) > max_y:
-                max_y = max(df.values)
-
-        max_y = 55000
-        # get the first DateTime in the dataframe index
-        first = pdict[keys[0]].index[0]
-        # get the last DateTime in the dataframe index
-        last = pdict[keys[0]].index[-1]
-
-        plt_elem = figure(
-            height=h_plt,
+    def _panel(name: str, y_label: str, series_dict: dict[str, pd.Series], y_range=None):
+        fig_kwargs = dict(
+            height=260,
             width=1200,
             tools="xpan,wheel_zoom,box_zoom,reset,save,hover",
             x_axis_type="datetime",
             x_axis_location="above",
             background_fill_color="#efefef",
             x_range=(first, last),
-            y_range=(min_y - (0.05 * min_y), max_y + (0.05 * max_y)),
-            title=key,
+            title=name,
         )
+        if y_range is not None:
+            fig_kwargs["y_range"] = y_range
 
-        for k, df in pdict.items():
-            plt_elem.line(
-                df.index,
-                df.loc[:],
-                color=colors[keys.index(k)],
-                legend_label=k,
-                line_width=3,
-            )
-        if key == plt_elem_names[0]:
-            plt_elems = [plt_elem]
-        else:
-            plt_elems.append(plt_elem)
+        p = figure(**fig_kwargs)
+        colors = ["black", "firebrick", "steelblue", "seagreen", "darkorange"]
+        for i, (k, s) in enumerate(series_dict.items()):
+            p.line(s.index, s.values, line_width=2, color=colors[i % len(colors)], legend_label=k)
+        p.yaxis.axis_label = y_label
+        p.legend.click_policy = "hide"
+        return p
 
-    # set x_ranges to match
-    for key, pdict in plot_dicts.items():
-        if key != plt_elem_names[0]:
-            plt_elems[plt_elem_names.index(key)].x_range = plt_elems[0].x_range
+    p_ec = _panel(
+        f"{title}: EC",
+        "EC (uS/cm)",
+        {"obs": ec_obs, "est": ec_est},
+        y_range=(0, 55000),
+    )
+    p_elev = _panel("Stage", "Stage", {"elev": elev})
+    p_ndo = _panel("NDO", "NDO", {"ndo": ndo})
 
-    # create scroller with range_dict_key
+    # Link x ranges
+    p_elev.x_range = p_ec.x_range
+    p_ndo.x_range = p_ec.x_range
+
+    # Scroller (use EC panel's y-range for context)
     select = figure(
-        title="Drag the middle and edges of the selection box to change the range",
-        height=130,
+        title="Drag the selection box to change the time window",
+        height=140,
         width=1200,
-        y_range=plt_elems[plt_elem_names.index(range_dict_key)].y_range,
+        y_range=p_ec.y_range,
         x_axis_type="datetime",
         y_axis_type=None,
         tools="",
@@ -196,27 +174,56 @@ def plot_dicts(plot_dicts, range_dict_key, save_filename=None, date_range=None):
         background_fill_color="#efefef",
     )
 
-    range_tool = RangeTool(x_range=plt_elems[0].x_range)
-    range_tool.overlay.fill_color = "navy"
-    range_tool.overlay.fill_alpha = 0.2
-
-    keys = list(plot_dicts[range_dict_key].keys())
-    for key, df in plot_dicts[range_dict_key].items():
-        select.line(
-            df.index, df.loc[:], color=colors[keys.index(key)], legend_label=key
-        )
-
+    # Plot both obs+est in the scroller for context
+    select.line(ec_obs.index, ec_obs.values, line_width=1.5, legend_label="obs")
+    select.line(ec_est.index, ec_est.values, line_width=1.5, legend_label="est")
     select.ygrid.grid_line_color = None
+
+    range_tool = RangeTool(x_range=p_ec.x_range)
+    range_tool.overlay.fill_alpha = 0.2
     select.add_tools(range_tool)
 
-    plot_final = column(*(plt_elems + [select]))
-    if save_filename is not None:
-        output_file(save_filename, mode="inline")
-        save(plot_final)
+    # IMPORTANT: Do NOT set select.toolbar.active_multi = range_tool
+    # RangeTool is active by default in newer Bokeh and is no longer a multi GestureTool.
+
+    layout = column(p_ec, p_elev, p_ndo, select)
+    if WRITE_HTML:
+        output_file(str(HTML_OUT), mode="inline", title="ec_est example")
+        save(layout)
     else:
-        show(plot_final)
+        show(layout)
+
+
+def main() -> None:
+
+    if not MODEL_YAML.exists():
+        raise FileNotFoundError("model.yaml not found. Run fitting_example.py first.")
+
+    ndo15, elev15, obs_ec15 = _read_inputs_15min()
+
+    # Slice like fitting_example (and keep padding for elev)
+    ndo_in = ndo15.loc[EVAL_START:EVAL_END]
+    elev_in = elev15.loc[EVAL_START - STAGE_PAD : EVAL_END + STAGE_PAD]
+
+    # Estimator expects timebase consistency; keep strict
+    _validate_timebase("ndo_in", ndo_in, "15min")
+    _validate_timebase("elev_in", elev_in, "15min")
+
+    ec_est = ec_est_yaml(ndo_in, elev_in, str(MODEL_YAML))
+    print("ndo_in:", ndo_in.index[0], ndo_in.index[-1])
+    print("elev_in:", elev_in.index[0], elev_in.index[-1])
+    print("ec_est:", ec_est.index[0], ec_est.index[-1])
+
+
+    # Plot comparisons only over eval window
+    ec_est = ec_est.loc[EVAL_START:EVAL_END]
+    ec_obs = obs_ec15.loc[EVAL_START:EVAL_END]
+    elev_plot = elev15.loc[EVAL_START:EVAL_END]
+
+
+    _plot_bokeh(ec_obs=ec_obs, ec_est=ec_est, elev=elev_plot, ndo=ndo_in)
 
 
 if __name__ == "__main__":
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    os.chdir(str(HERE))
     main()

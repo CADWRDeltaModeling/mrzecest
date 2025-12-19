@@ -1,87 +1,77 @@
-from mrzecest.ec_boundary_fit_gee import *
-from mrzecest.ec_boundary import *
-from mrzecest.fitting_util import *
-from vtools import rhistinterp
+from mrzecest.ec_boundary_fit import fit_mrz_ecest
+from mrzecest.ec_boundary import ec_est_yaml
+from mrzecest.fitting_util import build_model_from_fit, write_model_yaml
+
+from vtools import rhistinterp, hours
 import pandas as pd
 import matplotlib.pyplot as plt
+from dms_datastore.read_ts import read_ts
+from ndo_chooser import get_ndo
 
 
 def main():
     config = "fitting_config.yaml"
-    ndo = pd.read_csv(
-        "./data/hist_ndo.csv", header=0, index_col=0, parse_dates=["datetime"]
-    )
-    ndo = ndo.asfreq("d")
-    ndo = ndo.to_period()
-    ndo15 = rhistinterp(ndo, "h", lowbound=-2000.0)
+    ndo_source = "dayflow"  # "dsm2" or "dayflow"
+    ndo15 = get_ndo(ndo_source, "15min")
+
     elev = pd.read_csv(
-        "./data/mrz_hist_stage.csv", header=0, index_col=0, parse_dates=["datetime"]
+        "./data/dms_mrz_elev_filled.csv",
+        header=0,
+        index_col=0,
+        parse_dates=["datetime"],
     )
-    elev = elev.asfreq("h")
+    elev = elev.asfreq("15min")
     obs_ec = pd.read_csv(
-        "./data/mrz_hist_ec.csv", header=0, index_col=0, parse_dates=["datetime"]
+        "./data/dms_mrz@upper_ec.csv",
+        header=0,
+        index_col=0,
+        parse_dates=["datetime"],
+        comment="#",
     )
-    obs_ec = obs_ec.asfreq("h")
+    obs_ec15 = obs_ec.resample("15min").interpolate(limit=4)
     obs_ec15 = obs_ec.interpolate(limit=4)
-    # fig, (ax0,ax1,ax2) = plt.subplots(3,sharex=True)
-    # ax0.plot(ndo15.index,ndo15.values)
-    # ax1.plot(elev.index, elev.values)
-    # ax2.plot(obs_ec.index,obs_ec.values)
-    x_res, coefs, pred_df = fit_mrzecest_gee(
+    obs_ec15 = obs_ec15.clip(lower=201).resample("15min").asfreq("15min")
+
+    ndo15_valid = ndo15.dropna(how="all")
+    if ndo15_valid.empty:
+        raise ValueError("ndo15 has no valid data to determine bounds.")
+
+    valid_start = pd.Timestamp(2004, 1, 1)
+    valid_end = pd.Timestamp(2025, 4, 1)
+    ndo15 = ndo15.loc[valid_start:valid_end]
+    elev = elev.loc[
+        (valid_start - hours(96)) : valid_end + hours(99)
+    ]  # extra buffer for filtering
+    obs_ec = obs_ec.loc[valid_start:valid_end]
+    obs_ec15 = obs_ec15.loc[valid_start:valid_end]
+
+    x_res, coefs, pred_df = fit_mrz_ecest(
         config, elev=elev, ndo=ndo15, ec_obs=obs_ec15
     )
 
-    log10beta = x_res[0]  # x[0] from ec_boundary_fit_gee.py printout
-    npow = x_res[1]  # x[1] from ec_boundary_fit_gee.py printout
-    area_coef = x_res[2] * 3600 * 1000000.0  # x[2] from ec_boundary_fit_gee.py printout
-    energy_coef = x_res[3] * 1000.0  # x[3] from ec_boundary_fit_gee.py printout
-    beta0 = coefs["const"]  # from const coef result
-    beta1 = coefs["gnpow"] * 0.001  # from gnpow coef result
-    filter_k0 = 6  # from fitting_config.yaml
-    filt_coefs = [
-        ak * 1e-3 for ak in coefs[coefs.index.str.startswith("z")].values
-    ]  # z{n} from output coefs
-    filter_dt = pd.Timedelta("3h")  # from fitting_config.yaml
-    so = 20000.0  # hardwired in ec_boundary_fit_gee.py
-    sb = 200.0  # hardwired in ec_boundary_fit_gee.py
+    # Build the canonical model dict from the fit result and fitting config.
+    # This keeps constants (so/sb) and filter setup single-sourced.
+    model = build_model_from_fit(config, x_res, coefs)
+    write_model_yaml(model, "model.yaml")
 
-    # align the ndo and elev dataframes
-    common_index = elev.index.intersection(ndo15.index)
-    ndo15 = ndo15.loc[common_index]
-    elev = elev.loc[common_index]
+    eval_start = pd.Timestamp("2006-01-01")
+    eval_end = pd.Timestamp("2025-01-01")
 
-    start = pd.to_datetime("2006-01-01")
-    end = pd.to_datetime("2007-01-01")
+    pad = pd.Timedelta("9d")  # documented example choice
 
-    mrzecest = ec_est(
-        ndo15,
-        elev,
-        area_coef,
-        energy_coef,
-        log10beta,
-        beta0,
-        beta1,
-        npow,
-        filter_k0,
-        filt_coefs,
-        filter_dt,
-        so,
-        sb,
-        start=start,
-        end=end,
-    )
-    obs_ec = obs_ec.loc[start:end]
-    pred_df = pred_df.loc[start:end]
-    pred_df.columns = ["obs", "fit"]
-    pred_df = np.exp(pred_df) * (so - sb) + sb  # untransfrm
+    ndo_in = ndo15.loc[eval_start:eval_end]
+    elev_in = elev.loc[eval_start - pad : eval_end + pad]
+
+    mrzecest = ec_est_yaml(ndo_in, elev_in, "model.yaml")
+
+    obs_ec_plot = obs_ec.loc[eval_start:eval_end]
 
     fig, ax = plt.subplots(1)
-    ax.plot(obs_ec.index, obs_ec.values)
+    ax.plot(obs_ec_plot.index, obs_ec_plot.values)
     ax.plot(mrzecest.index, mrzecest.values)
     ax.legend(["obs", "est"])
     plt.show()
 
 
 if __name__ == "__main__":
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
     main()

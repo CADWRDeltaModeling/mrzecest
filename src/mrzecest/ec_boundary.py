@@ -9,7 +9,7 @@ import os
 
 import numba
 
-from mrzecest.fitting_util import parse_config, read_fit_yaml
+from mrzecest.fitting_util import read_model_yaml, validate_model
 
 
 def gcalc(ndo, log10beta=10.1, g0=5000.0):
@@ -45,10 +45,8 @@ def gcalc(ndo, log10beta=10.1, g0=5000.0):
             ti = pd.Timedelta("1 " + freq_str)
         else:
             ti = pd.Timedelta(freq_str)
-    dt = 1
     nstep = len(ndo)
-    if ti == pd.Timedelta("15MIN"):
-        # dt = 0.25 # hours
+    if ti == pd.Timedelta("15min"):
         dt = 900.0  # [s]
     elif ti == pd.Timedelta("1h"):
         dt = 3600.0  # [s]
@@ -70,9 +68,9 @@ def gcalc(ndo, log10beta=10.1, g0=5000.0):
     # solve implicitly with trapezoidal method
     # using g_kernel to accelerate, which requires
     # pandas conversion to/from numpy
-    print("integrating")
     g.iloc[:] = g_kernel(ndo.squeeze().to_numpy(), beta, g0, dt)
-    print("done")
+    
+
     return g
 
 
@@ -135,41 +133,134 @@ def z_sum_term(z, filter_k0, filt_coefs, filter_dt):
     return z_sum
 
 
-# default_ec_params = {'area_coef' : 0.,
-#                      'energy_coef': 0.,
-#                      'log10beta':10.1}
+import pandas as pd
+
+
+def _infer_fixed_dt(idx: pd.DatetimeIndex) -> pd.Timedelta:
+    if not isinstance(idx, pd.DatetimeIndex):
+        raise TypeError("Index must be a DatetimeIndex.")
+    if idx.has_duplicates:
+        raise ValueError("Index must not contain duplicates.")
+    if not idx.is_monotonic_increasing:
+        raise ValueError("Index must be monotonic increasing.")
+    if len(idx) < 2:
+        raise ValueError("Need at least 2 timestamps to infer dt.")
+    d = idx.to_series().diff().dropna()
+    # strict: every step identical
+    if (d != d.iloc[0]).any():
+        raise ValueError("Index is not on a fixed sampling interval.")
+    return pd.Timedelta(d.iloc[0])
+
+
+def validate_inputs(
+    ndo: pd.Series,
+    elev: pd.Series,
+    *,
+    start=None,
+    end=None,
+    pad: pd.Timedelta,
+    allowed_dt=(pd.Timedelta("15min"), pd.Timedelta("1h")),
+) -> tuple[pd.Series, pd.Series, pd.DatetimeIndex, pd.Timestamp, pd.Timestamp, pd.Timedelta]:
+    """
+    Validate inputs for EC estimation.
+
+    Contract:
+      - NDO defines the evaluation window and output index, though this can be expliclty overridden (shorter window).
+      - Elevation must cover [start-pad, end+pad] and must include all NDO timestamps
+        on [start, end] (superset condition).
+      - No missing values in ndo or elev.
+      - No resampling or interpolation is performed.
+      - Hard fail on PeriodIndex.
+
+    Returns:
+      ndo_eval: ndo sliced to [start, end]
+      elev_pad: elev sliced to [start-pad, end+pad]
+      eval_index: ndo_eval.index
+      start, end: resolved evaluation window
+      dt: inferred sampling interval (must match ndo/elev and be allowed)
+      eval_index: index for evaluation window
+    """
+    if isinstance(ndo.index, pd.PeriodIndex):
+        raise TypeError("ndo index must be a DatetimeIndex (PeriodIndex is not allowed).")
+    if isinstance(elev.index, pd.PeriodIndex):
+        raise TypeError("elev index must be a DatetimeIndex (PeriodIndex is not allowed).")
+    if not isinstance(ndo.index, pd.DatetimeIndex):
+        raise TypeError("ndo index must be a DatetimeIndex.")
+    if not isinstance(elev.index, pd.DatetimeIndex):
+        raise TypeError("elev index must be a DatetimeIndex.")
+    ndo = ndo.squeeze()
+    elev = elev.squeeze()
+    if ndo.isna().any():
+        raise ValueError("ndo contains NaNs; missing data are not allowed for ndo.")
+    if elev.isna().any():
+        raise ValueError("elev contains NaNs; missing data are not allowed for elev.")
+
+    ndo_dt = _infer_fixed_dt(ndo.index)
+    elev_dt = _infer_fixed_dt(elev.index)
+    if ndo_dt != elev_dt:
+        raise ValueError(f"Sampling dt mismatch: ndo={ndo_dt}, elev={elev_dt}")
+    if ndo_dt not in allowed_dt:
+        raise ValueError(f"Unsupported dt={ndo_dt}. Allowed: {allowed_dt}")
+
+    # Resolve eval window from ndo by default
+    start = ndo.index[0] if start is None else pd.to_datetime(start)
+    end = ndo.index[-1] if end is None else pd.to_datetime(end)
+
+    if start >= end:
+        raise ValueError("start must be < end.")
+
+    # start/end must be within ndo (since ndo defines evaluation window)
+    if start < ndo.index[0] or end > ndo.index[-1]:
+        raise ValueError("start/end must lie within ndo index (ndo defines evaluation window).")
+
+    ndo_eval = ndo.loc[start:end]
+    eval_index = ndo_eval.index
+
+    # Elevation must include every ndo timestamp over eval window (superset condition)
+    missing = eval_index.difference(elev.index)
+    if len(missing) > 0:
+        ex = missing[:3].to_pydatetime().tolist()
+        raise ValueError(
+            "elev must contain all ndo timestamps over [start,end] "
+            f"(missing {len(missing)} stamps; example missing={ex})"
+        )
+
+    # Padding coverage for elevation to accommodate filtration
+    need_lo = start - pad
+    need_hi = end + pad
+    if elev.index[0] > need_lo or elev.index[-1] < need_hi:
+        raise ValueError(f"elev must cover [{need_lo}, {need_hi}] for padding.")
+
+    elev_pad = elev.loc[need_lo:need_hi]
+    # (No NaNs already enforced above; slicing preserves that)
+
+    return ndo_eval, elev_pad, eval_index, start, end, ndo_dt
+
 
 
 def ec_est_yaml(ndo, elev, yaml_fn, start=None, end=None):
+    """Estimate EC using a model specification YAML.
 
-    (
-        area_coef,
-        energy_coef,
-        log10beta,
-        beta0,
-        beta1,
-        npow,
-        filter_k0,
-        filt_coefs,
-        filter_dt,
-        so,
-        sb,
-    ) = read_fit_yaml(yaml_fn)
+    """
+    
+    model = read_model_yaml(yaml_fn)
+    validate_model(model)
 
+    fs = model["filter_setup"]
     return ec_est(
         ndo,
         elev,
-        area_coef,
-        energy_coef,
-        log10beta,
-        beta0,
-        beta1,
-        npow,
-        filter_k0,
-        filt_coefs,
-        filter_dt,
-        so,
-        sb,
+        model["area_coef"],
+        model["energy_coef"],
+        model["beta_log10"],
+        model["b0"],
+        model["b1"],
+        model["npow"],
+        fs["k0"],
+        model["afilt"],
+        pd.Timedelta(fs["dt"]),
+        model["so"],
+        model["sb"],
         start=start,
         end=end,
     )
@@ -234,58 +325,30 @@ def ec_est(
         Estimated electrical conductivity time series at the Martinez boundary, indexed by time.
     """
 
-    # Convert DataFrame to Series if only one column
-    if isinstance(ndo, pd.DataFrame) and ndo.shape[1] == 1:
-        ndo = ndo.iloc[:, 0]
-    if isinstance(elev, pd.DataFrame) and elev.shape[1] == 1:
-        elev = elev.iloc[:, 0]
-
-    # Normalize indices to remove seconds and microseconds for proper alignment
-    # Convert PeriodIndex to DatetimeIndex if needed, then normalize
-    if isinstance(ndo.index, pd.PeriodIndex):
-        ndo.index = ndo.index.to_timestamp()
-    if isinstance(ndo.index, pd.DatetimeIndex):
-        ndo.index = ndo.index.map(lambda x: x.replace(second=0, microsecond=0))
-    
-    if isinstance(elev.index, pd.PeriodIndex):
-        elev.index = elev.index.to_timestamp()
-    if isinstance(elev.index, pd.DatetimeIndex):
-        elev.index = elev.index.map(lambda x: x.replace(second=0, microsecond=0))
-
-    # Determine which index has the finer frequency
-    if elev.index.freq is not None and ndo.index.freq is not None:
-        if elev.index.freq < ndo.index.freq:
-            ndo = ndo.resample(elev.index.freq).interpolate(method="linear")
-        elif elev.index.freq != ndo.index.freq:
-            elev = elev.resample(ndo.index.freq).interpolate(method="linear")
-
-    overlapping_index = ndo.index.intersection(elev.index)
-    ndo = ndo.loc[overlapping_index]
-    elev = elev.loc[overlapping_index]
-    elev.index.freq = elev.index.inferred_freq
-    print(
-        f"Tidal mean is {elev.mean():.2f} ft, range is {elev.max()-elev.min():.2f} ft"
+    # strict validation; ndo defines evaluation grid; elev is padded superset
+    ndo, elev, eval_index, start, end, dt = validate_inputs(
+        ndo,
+        elev,
+        start=start,
+        end=end,
+        pad=pd.Timedelta("9d"),   # later: read from model.yaml requirements
     )
 
-    assert ndo.index.equals(elev.index)
+    print(f"Tidal mean is {elev.mean():.2f} ft, range is {elev.max()-elev.min():.2f} ft")
 
-    # Set default start and end times if not provided
-    if start is None:
-        start = min(ndo.index.min(), elev.index.min()) + pd.Timedelta("35D")
-    else:
-        if elev.index.min() > start - pd.Timedelta("30D"):
-            raise ValueError(
-                "elev.index.min() must be at least 30 days before start. The length of ec won't match the ec_kernel output"
-            )
-    if end is None:
-        end = max(ndo.index.max(), elev.index.max()) - pd.Timedelta("35D")
-    else:
-        if elev.index.max() < end + pd.Timedelta("30D"):
-            raise ValueError(
-                "elev.index.max() must be at least 30 days after end. The length of ec won't match the ec_kernel output"
-            )
+    # Output window: if start/end provided, they must be within the input index.
+    if start is not None:
+        start = pd.to_datetime(start)
+        if start not in ndo.index:
+            raise ValueError("start must be an exact timestamp in the input index.")
+    if end is not None:
+        end = pd.to_datetime(end)
+        if end not in ndo.index:
+            raise ValueError("end must be an exact timestamp in the input index.")
+    if start is not None and end is not None and start >= end:
+        raise ValueError("start must be < end.")
 
-    # Apply a cosine Lanczos filter (low-pass) to the elevation dataframe
+    # Apply a cosine Lanczos filter (low-pass) to the elevation dataframe (low-pass) to the elevation dataframe
     elev_filt = cosine_lanczos(elev, "40h")
     elev_tidal = elev.copy() - elev_filt  # isolate tidal part for z_sum term
     energy = cosine_lanczos(elev_tidal * elev_tidal, "40h")
@@ -303,8 +366,17 @@ def ec_est(
         f"NDO mean is {ndo.mean():.0f} cfs, max is {ndo.max():.0f} cfs, min is {ndo.min():.0f} cfs"
     )
     ndomod = ndo_mod(ndo, d_elev_filt, area_coef, energy, energy_coef)
-    ndomod = ndomod.dropna()
-    ndomod = ndomod.loc[ndomod[ndomod["ndo"] >= 0].index[0] :]
+
+    # Keep strictness about timestamps: ndomod must exist on eval_index
+    missing = eval_index.difference(ndomod.index)
+    if len(missing) > 0:
+        ex = missing[:3].to_pydatetime().tolist()
+        raise ValueError(
+            f"ndomod missing {len(missing)} eval timestamps (example {ex}). "
+            "This indicates derivative/filter edge effects or insufficient elevation padding."
+        )
+
+    ndomod = ndomod.loc[eval_index] 
 
     print(
         f"Modified NDO mean is {ndomod.mean().values[0]:.0f} cfs, max is {ndomod.max().values[0]:.0f} cfs, min is {ndomod.min().values[0]:.0f} cfs"
@@ -312,31 +384,43 @@ def ec_est(
     # calculate g-model results
     g = gcalc(ndomod, log10beta=log10beta)
 
-    # calculate lagged z_df term for
+    # lagged z_sum term (will drop edge times where shifts are undefined)
+    # Compute z_sum on the padded tidal series so shifts have support
     z_sum = z_sum_term(elev_tidal, filter_k0, filt_coefs, filter_dt)
 
-    g = g.loc[(start - pd.Timedelta("30d")) : (end + pd.Timedelta("30d"))]
-    z_sum = z_sum.loc[(start - pd.Timedelta("30d")) : (end + pd.Timedelta("30d"))]
-    ec = z_sum.copy()
-    ec[:] = np.nan
+    # Now enforce coverage on eval window (strict) and then select
+    missing = eval_index.difference(z_sum.index)
+    if len(missing) > 0:
+        ex0 = missing[0]
+        exN = missing[-1]
+        raise ValueError(
+            f"z_sum is not defined on the full evaluation window "
+            f"(missing {len(missing)} timestamps; first missing {ex0}, last missing {exN}). "
+            "Choose a narrower start/end (move inward), or provide more elevation padding, "
+            "or adjust filter_setup (k0/filter_length/dt/centering)."
+        )
 
-    assert g.index.equals(z_sum.index), (
-        "Index mismatch between g and z_sum. This is likely because the tidal data did not extend beyond 40 days before the 'start' time. "
-        "Ensure that the tidal data covers at least 40 days prior to 'start' so that the tidal energy is not NaN when computing the z_sum term."
-    )
+    z_sum = z_sum.loc[eval_index]
 
-    # Calculate EC
-    # using ec_kernel to accelerate, which requires
-    # pandas conversion to/from numpy
+    # Only now slice the other series for downstream computations/printing
+    elev_filt = elev_filt.loc[eval_index]
+    elev_tidal = elev_tidal.loc[eval_index]
+    energy = energy.loc[eval_index]
+    g = g.loc[eval_index]
+
+    ec = pd.Series(index=eval_index, dtype=float)
     print("solving for ec")
     ec.iloc[:] = ec_kernel(
-        g.squeeze().to_numpy(), z_sum.squeeze().to_numpy(), beta0, beta1, npow, so, sb
+        g.to_numpy(), z_sum.to_numpy(), beta0, beta1, npow, so, sb
     )
     print("done")
 
-    ec = ec.loc[start:end]
+
+    ec = ec.loc[eval_index]
+    
     print(
-        f"Estimated EC mean is {ec.mean():.0f} psu, max is {ec.max():.0f} psu, min is {ec.min():.0f} psu"
+        f"Estimated EC mean is {ec.mean():.0f}, "
+        f"max is {ec.max():.0f}, min is {ec.min():.0f}"
     )
 
     return ec
@@ -350,7 +434,6 @@ def ec_kernel(g, z_sum, beta0, beta1, npow, so, sb):
     ntime = len(g)
 
     for i in np.arange(1, ntime):
-        # TODO: FIX TO BE CONSISTENT WIHT GEE.py
         ecfrac = (
             beta0 + beta1 * g[i] ** npow + g[i] ** npow * z_sum[i]
         )  # npow1 and b1 are our parameters to tweak

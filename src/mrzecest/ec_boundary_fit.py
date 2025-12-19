@@ -18,7 +18,7 @@ import numpy as np
 from vtools import *
 import matplotlib.pyplot as plt
 from mrzecest.ec_boundary import gcalc, ndo_mod
-from mrzecest.fitting_util import parse_config
+from mrzecest.fitting_util import parse_config, validate_fit_config
 
 import statsmodels.api as sm
 from statsmodels.genmod.generalized_estimating_equations import GEE
@@ -34,18 +34,57 @@ def outer_fit(x, data, return_coefs=False, plot_fits=False):
     global calls
     calls = calls + 1
     print(f"Entering outer fit with x = {x}")
-    log10beta = x[0]
-    npow = x[1]
-    area_coef = x[2] * 3600 * 1000000.0
-    energy_coef = x[3] * 1000
+    fit_spec = data.attrs.get("fit_spec", None)
+    if fit_spec is None:
+        raise ValueError("fit_spec missing from data.attrs; cannot interpret outer parameters")
+
+    outer_params = fit_spec.get("outer_params")
+    if not outer_params:
+        raise ValueError("fit_spec.outer_params is empty")
+
+    # Map optimizer vector -> canonical model parameter values.
+    pvals = {}
+    for i, p in enumerate(outer_params):
+        key = p.get("key")
+        if not key:
+            raise ValueError(f"outer_params[{i}] missing 'key'")
+        scale = p.get("scale", 1.0)
+        pvals[key] = float(x[i]) * float(scale)
+
+    try:
+        log10beta = pvals["beta_log10"]
+        npow = pvals["npow"]
+        area_coef = pvals["area_coef"]
+        energy_coef = pvals["energy_coef"]
+    except KeyError as e:
+        raise ValueError(f"fit_run.outer_params must include beta_log10, npow, area_coef, energy_coef; missing {e}")
 
     ndo = data.ndo
     ec_obs = data.ec_obs
-    g0 = 5000.0
+    g0 = 1000.
     # external parameters are used for g()
-    ndomod = ndo_mod(data.ndo, data.d_elev_filt, area_coef, data.energy, energy_coef)
-    g = gcalc(ndomod, log10beta=log10beta, g0=g0)
+    ndomod = ndo_mod(data.ndo, data.d_elev_filt, area_coef, data.energy, energy_coef).squeeze()
+    g = gcalc(ndomod, log10beta=log10beta, g0=g0)    
+    has_nan = g.squeeze().isna().any() 
+    has_negative = (g.squeeze() < 0).any()
+    if has_nan or has_negative:
+        if ndomod.iat[0] < 0.:
+            print("ndomod has negative values at start:", ndomod.iloc[0])
+        raise ValueError(f"g has NaN: {has_nan} or negative values: {has_negative}")
 
+    if False:
+        ndomod_series = ndomod.squeeze()
+        g_series = g.squeeze()
+        fig, ax = plt.subplots()
+        ax.plot(data.ndo.index, data.ndo.values, label="ndo")
+        ax.plot(ndomod_series.index, ndomod_series.values, label="ndomod")
+        ax.plot(g_series.index, g_series.values, label="g")
+        ax.legend()
+        ax.set_ylabel("Value")
+        ax.set_title("ndomod vs g")
+        fig.autofmt_xdate()
+        ax.grid(True)
+        plt.show()
     gnpow = g.pow(npow)
 
     # now gather the linear components. As is usual for R-style models
@@ -55,8 +94,8 @@ def outer_fit(x, data, return_coefs=False, plot_fits=False):
     #                appear in data as columns called z0,z1,z2,z3.
     #
     use_ols = True
-    sb = 200.0  # Todo: move to inputs
-    so = 20000.0
+    sb = float(fit_spec["sb"])
+    so = float(fit_spec["so"])
     y = data.ec_obs
     y = y.clip(lower=1e-10)
 
@@ -69,8 +108,9 @@ def outer_fit(x, data, return_coefs=False, plot_fits=False):
         ysmall = y < 1000.0
         y[:] = (y - sb) / (so - sb)
 
+
     zcols = [col for col in data.columns if col.lower().startswith("z")]
-    preds = pd.concat((0.001 * gnpow, 0.001 * data[zcols].mul(gnpow, axis=0)), axis=1)
+    preds = pd.concat((0.001 * gnpow, 0.001 * data.loc[:,zcols].mul(gnpow, axis=0)), axis=1)
     preds.columns = ["gnpow"] + zcols
     print("NaN check found null: ", preds.isnull().any(axis=None))
 
@@ -78,7 +118,7 @@ def outer_fit(x, data, return_coefs=False, plot_fits=False):
     y = y.loc[~ysmall]
     X = X.loc[~ysmall, :]
 
-    mask = ~X.isnull().any(axis=1)
+    mask = ~X.isnull().any(axis=1) & y.notna()
     X_clean = X[mask]
     y_clean = y[mask]
     print("Condition Number of design matrix:", np.linalg.cond(X_clean))
@@ -111,10 +151,8 @@ def outer_fit(x, data, return_coefs=False, plot_fits=False):
 
     ypred = y_clean.copy().to_frame()
     ypred.columns = ["data"]
-    print(ypred)
     ypred["fit"] = np.nan
     ypred.loc[:, "fit"] = predictions
-    print(ypred)
 
     if ((calls > 1000) | return_coefs) and plot_fits:
         fig, ax = plt.subplots(1)
@@ -135,15 +173,69 @@ def outer_fit(x, data, return_coefs=False, plot_fits=False):
         return out  # qic[0]
 
 
-def fit_mrzecest_gee(config, elev=None, ndo=None, ec_obs=None, plot_fits=False):
+def fit_mrz_ecest(config, elev=None, ndo=None, ec_obs=None, plot_fits=False):
 
     print("Entering fit routine")
     if isinstance(config, str):
         config = parse_config(config)
 
-    # Now do bounds/nan check
-    start = pd.to_datetime(config["fit_start"])
-    end = pd.to_datetime(config["fit_end"])
+    # No legacy/backward constraints: validate and fail fast.
+    validate_fit_config(config)
+
+    fit_run = config.get("fit_run")
+    if not isinstance(fit_run, dict):
+        raise ValueError("fit_run is required and must be a mapping")
+
+    fit_start_key = fit_run.get("start")
+    fit_end_key = fit_run.get("end")
+    if fit_start_key is None or fit_end_key is None:
+        raise ValueError("fit_run must include 'start' and 'end'")
+    start = pd.to_datetime(fit_start_key)
+    end = pd.to_datetime(fit_end_key)
+    solver = str(fit_run.get("solver", "powell")).lower()
+
+    outer_params = fit_run.get("outer_params")
+    if not isinstance(outer_params, (list, tuple)) or len(outer_params) == 0:
+        raise ValueError("fit_run.outer_params is required and must be a non-empty list")
+
+    # Build x0/bounds from outer_params. Keys must match canonical model param names.
+    x0 = []
+    bounds = []
+    any_finite_bounds = False
+    for i, p in enumerate(outer_params):
+        if not isinstance(p, dict):
+            raise TypeError(f"outer_params[{i}] must be a mapping, got {type(p)}")
+        key = p.get("key")
+        if not key:
+            raise ValueError(f"outer_params[{i}] missing 'key'")
+        if "x0" not in p:
+            raise ValueError(f"outer_params[{i}] ({key}) missing 'x0'")
+        if "bounds" not in p:
+            raise ValueError(f"outer_params[{i}] ({key}) missing 'bounds'")
+        x0_i = float(p["x0"])
+        b = p["bounds"]
+        if b is None or (isinstance(b, (list, tuple)) and len(b) == 2 and b[0] is None and b[1] is None):
+            bnd = (None, None)
+        else:
+            if not (isinstance(b, (list, tuple)) and len(b) == 2):
+                raise ValueError(f"outer_params[{i}] ({key}) bounds must be [lo, hi] or [null, null]")
+            lo = None if b[0] is None else float(b[0])
+            hi = None if b[1] is None else float(b[1])
+            bnd = (lo, hi)
+            if lo is not None or hi is not None:
+                any_finite_bounds = True
+        # Fail fast if x0 outside finite bounds
+        lo, hi = bnd
+        if lo is not None and x0_i < lo:
+            raise ValueError(f"outer_params[{i}] ({key}) x0 {x0_i} < lower bound {lo}")
+        if hi is not None and x0_i > hi:
+            raise ValueError(f"outer_params[{i}] ({key}) x0 {x0_i} > upper bound {hi}")
+        x0.append(x0_i)
+        bounds.append(bnd)
+
+    # Bounds must not be silently ignored.
+    if any_finite_bounds and solver in {"nelder-mead", "nelder_mead", "neldermead"}:
+        raise ValueError("Bounds were provided but solver is Nelder-Mead (bounds would be ignored). Use a bounded solver.")
 
     elev.index.freq = elev.index.inferred_freq
     ndo.index.freq = ndo.index.inferred_freq
@@ -152,23 +244,10 @@ def fit_mrzecest_gee(config, elev=None, ndo=None, ec_obs=None, plot_fits=False):
     elev_filt = cosine_lanczos(elev, "40h")
     offset = elev.index.freq
     two_dtsec = 2.0 * pd.Timedelta(offset, unit=offset.freqstr.lower()).total_seconds()
-    print(two_dtsec)
+    print(f"two_dtsec = {two_dtsec}")
     d_elev_filt = (elev_filt.shift(-1) - elev_filt.shift(1)) / two_dtsec
     elev_tidal = elev.copy() - elev_filt  # isolate tidal part
     energy = cosine_lanczos(elev_tidal * elev_tidal, "40h")
-
-    # The outer optimization is only in terms of log10beta and npow
-    # The other variables are fit globally using GEE in a way that
-    # does not require a starting guess.
-    try:
-        log10beta = float(config["param"]["log10gbeta"][0])
-    except:
-        log10beta = float(config["param"]["log10gbeta"])
-
-    try:
-        npow = float(config["param"]["npow"][0])
-    except:
-        npow = float(config["param"]["npow"])
 
     # Prepare fixed items and data
     filter_dt = pd.Timedelta(config["filter_setup"]["dt"])
@@ -191,21 +270,46 @@ def fit_mrzecest_gee(config, elev=None, ndo=None, ec_obs=None, plot_fits=False):
         solu_df[f"z{k}"] = solu_df["elev_tidal"].shift(-(filter_k0 - k) * dstep)
 
     # Do bounds/nan check after all the filteration is done.
-    start = pd.to_datetime(config["fit_start"])
-    end = pd.to_datetime(config["fit_end"])
     solu_df = solu_df.loc[start:end, :]
+
+    # Attach fit spec (constants + parameter interpretation) to the data frame.
+    solu_df.attrs["fit_spec"] = {
+        "so": float(config["so"]),
+        "sb": float(config["sb"]),
+        "outer_params": outer_params,
+    }
     # solu_df.to_csv("test.csv", index=True, header=True, float_format="%.3f")
 
-    x0 = [10.1, 0.5, -1.0, 0.88]  # log10beta, npow, area correction
-
-    res = scipy.optimize.minimize(outer_fit, x0, args=solu_df, tol=5e-3)
+    tol = float(fit_run.get("tol", 5e-3))
+    res = scipy.optimize.minimize(
+        outer_fit,
+        x0,
+        args=(solu_df,),
+        tol=tol,
+        method=("Nelder-Mead" if solver in ("nelder-mead", "nelder_mead", "neldermead") else solver),
+        bounds=bounds,
+    )
     print(res.success)
     print(res.message)
     x_res, coefs, ypred = outer_fit(
         res.x, solu_df, return_coefs=True, plot_fits=plot_fits
     )
+    # Report parameters in canonical units using the same mapping as the objective.
+    pvals = {}
+    for i, p in enumerate(outer_params):
+        pvals[p["key"]] = float(x_res[i]) * float(p.get("scale", 1.0))
     print(
-        f"log10beta = {round(x_res[0],3)} npow = {round(x_res[1],3)} area_coef = {round(x_res[2]*3600*1000000.,3)} energy_coef = {round(x_res[3]*1000,3)}"
+        " ".join(
+            [
+                f"{k}={round(v,3)}"
+                for k, v in (
+                    ("beta_log10", pvals.get("beta_log10")),
+                    ("npow", pvals.get("npow")),
+                    ("area_coef", pvals.get("area_coef")),
+                    ("energy_coef", pvals.get("energy_coef")),
+                )
+            ]
+        )
     )
     print(f"beta0 = {coefs['const']}")
     print(f"beta1 = 0.001*{coefs['gnpow']}")
