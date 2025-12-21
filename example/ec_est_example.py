@@ -28,7 +28,7 @@ from bokeh.plotting import figure
 from vtools import rhistinterp, hours
 
 from mrzecest.ec_boundary import ec_est_yaml
-
+from ndo_chooser import get_ndo
 
 # -----------------
 # User-edit settings
@@ -36,6 +36,8 @@ from mrzecest.ec_boundary import ec_est_yaml
 HERE = Path(__file__).resolve().parent
 DATA_DIR = HERE / "data"
 MODEL_YAML = HERE / "model.yaml"
+
+NDO_SOURCE = "dayflow"  # "dsm2" or "dayflow"
 
 # Evaluation window (inclusive endpoints for slicing)
 EVAL_START = pd.Timestamp("2006-01-01")
@@ -54,18 +56,8 @@ def _read_inputs_15min() -> tuple[pd.Series, pd.Series, pd.Series]:
     """Read NDO, stage, and observed EC using the same approach as fitting_example.py."""
 
     # --- NDO: daily -> PeriodIndex -> conservative upsample to 15-min
-    ndo = pd.read_csv(
-        DATA_DIR / "dsm2_ndo_hist.csv",
-        header=0,
-        index_col=0,
-        parse_dates=["datetime"],
-    ).iloc[:, 0]
-
-    ndo = ndo.asfreq("d")
-    ndo = ndo.to_period("d")
-    ndo15 = rhistinterp(ndo, "15min", lowbound=-2000.0)
-    ndo15 = ndo15.asfreq("15min")
-
+    ndo_source = NDO_SOURCE
+    ndo15 = get_ndo(ndo_source, "15min")
 
     # --- Stage (already filled)
     elev = pd.read_csv(
@@ -126,7 +118,9 @@ def _plot_bokeh(
     first = ec_est.index[0]
     last = ec_est.index[-1]
 
-    def _panel(name: str, y_label: str, series_dict: dict[str, pd.Series], y_range=None):
+    def _panel(
+        name: str, y_label: str, series_dict: dict[str, pd.Series], y_range=None
+    ):
         fig_kwargs = dict(
             height=260,
             width=1200,
@@ -143,7 +137,13 @@ def _plot_bokeh(
         p = figure(**fig_kwargs)
         colors = ["black", "firebrick", "steelblue", "seagreen", "darkorange"]
         for i, (k, s) in enumerate(series_dict.items()):
-            p.line(s.index, s.values, line_width=2, color=colors[i % len(colors)], legend_label=k)
+            p.line(
+                s.index,
+                s.values,
+                line_width=2,
+                color=colors[i % len(colors)],
+                legend_label=k,
+            )
         p.yaxis.axis_label = y_label
         p.legend.click_policy = "hide"
         return p
@@ -214,12 +214,10 @@ def main() -> None:
     print("elev_in:", elev_in.index[0], elev_in.index[-1])
     print("ec_est:", ec_est.index[0], ec_est.index[-1])
 
-
     # Plot comparisons only over eval window
     ec_est = ec_est.loc[EVAL_START:EVAL_END]
     ec_obs = obs_ec15.loc[EVAL_START:EVAL_END]
     elev_plot = elev15.loc[EVAL_START:EVAL_END]
-
 
     _plot_bokeh(ec_obs=ec_obs, ec_est=ec_est, elev=elev_plot, ndo=ndo_in)
 

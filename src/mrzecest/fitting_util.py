@@ -3,6 +3,10 @@
 import yaml
 import pandas as pd
 import os
+import numpy as np
+import warnings
+import logging
+logger = logging.getLogger(__name__)
 
 
 def validate_fit_config(cfg: dict) -> None:
@@ -64,6 +68,22 @@ def validate_fit_config(cfg: dict) -> None:
         if k not in fs:
             raise ValueError(f"filter_setup missing required key '{k}'")
 
+    fit_run = cfg.get("fit_run") or {}
+    if not isinstance(fit_run, dict):
+        raise TypeError(f"fit_run must be a mapping, got {type(fit_run)}")
+    inner = fit_run.get("inner", None)
+    if inner is not None:
+        if not isinstance(inner, dict):
+            raise TypeError(f"fit_run.inner must be a mapping, got {type(inner)}")
+        b0spec = inner.get("b0", None)
+        if b0spec is not None:
+            if not isinstance(b0spec, dict):
+                raise TypeError(f"fit_run.inner.b0 must be a mapping, got {type(b0spec)}")
+            if set(b0spec.keys()) != {"fix", "value"}:
+                raise ValueError("fit_run.inner.b0 must have exactly keys: ['fix','value']")
+            _ = bool(b0spec["fix"])
+            _ = float(b0spec["value"])    
+
 
 def validate_model(model: dict) -> None:
     """Fail-fast validation for the canonical in-memory model dict."""
@@ -104,9 +124,21 @@ def validate_model(model: dict) -> None:
         raise TypeError(f"afilt must be a list/tuple, got {type(afilt)}")
     if len(afilt) != flen:
         raise ValueError(f"afilt length {len(afilt)} != filter_length {flen}")
+    front = model.get("front", None)
+    if not isinstance(front, dict):
+        raise TypeError("model.front must be a mapping")
+    for k in ("ec_target", "gthr", "energy_ref", "width_frac"):
+        if k not in front:
+            raise ValueError(f"model.front missing required key '{k}'")
+        v = float(front[k])  # fail-fast if not coercible
+        if not np.isfinite(v):
+            raise ValueError(f"model.front['{k}'] must be finite")
+    if not (0.0 < float(front["width_frac"]) < 1.0):
+        raise ValueError("model.front.width_frac must be in (0, 1)")
+ 
 
 
-def build_model_from_fit(config_yml: str, x_res, coefs) -> dict:
+def build_model_from_fit(config_yml, x_res, coefs, *, front_spec: dict) -> dict:
     """Build a canonical model dict from a fit result and fitting config.
 
     Centralizes fit-space scaling. Nothing else should hard-code constants like
@@ -133,20 +165,25 @@ def build_model_from_fit(config_yml: str, x_res, coefs) -> dict:
         scale = float(p.get("scale", 1.0))
         pvals[key] = float(x_res[i]) * scale
 
-    required_keys = {"beta_log10", "npow", "area_coef", "energy_coef"}
+    required_keys = {"beta_log10", "npow", "npow_tide", "area_coef", "energy_coef"}
     missing = required_keys - set(pvals)
     if missing:
         raise ValueError(
             f"fit_run.outer_params missing required keys: {sorted(missing)}"
         )
 
+    so_cfg = float(cfg["so"])
+    sb = float(cfg["sb"])
+
     model = {
-        "so": float(cfg["so"]),
-        "sb": float(cfg["sb"]),
+        # use fitted so if present, else fallback to config value
+        "so": float(pvals.get("so", so_cfg)),
+        "sb": float(sb),
         "area_coef": float(pvals["area_coef"]),
         "energy_coef": float(pvals["energy_coef"]),
         "beta_log10": float(pvals["beta_log10"]),
         "npow": float(pvals["npow"]),
+        "npow_tide": float(pvals.get("npow_tide", pvals["npow"])),
         "g0": float(cfg.get("g0", 5000.0)),
         "b0": float(coefs["const"]),
         "b1": float(coefs["gnpow"] * 0.001),
@@ -159,7 +196,14 @@ def build_model_from_fit(config_yml: str, x_res, coefs) -> dict:
         "afilt": [
             float(ak * 1e-3) for ak in coefs[coefs.index.str.startswith("z")].values
         ],
+        "front": {
+            "ec_target": float(front_spec["ec_target"]),
+            "gthr": float(front_spec["gthr"]),
+            "energy_ref": float(front_spec["energy_ref"]),
+            "width_frac": float(front_spec["width_frac"]),
+        }
     }
+
     validate_model(model)
     return model
 
@@ -169,7 +213,7 @@ def parse_config(yml):
         try:
             config = yaml.safe_load(stream)
         except yaml.YAMLError as exc:
-            print(exc)
+            logger.exception("Failed to parse config YAML %s: %s", yml, exc)
             raise
     return config
 
@@ -185,7 +229,7 @@ def read_model_yaml(yml):
         try:
             cfg = yaml.safe_load(stream)
         except yaml.YAMLError as exc:
-            print(exc)
+            logger.exception("Failed to read model YAML %s: %s", yml, exc)
             raise
 
     if not isinstance(cfg, dict) or "version" not in cfg:
@@ -201,6 +245,16 @@ def read_model_yaml(yml):
     if afilt is None:
         raise ValueError("Model YAML missing filter coefficients (filter_setup.afilt)")
 
+    # front block is required for evaluation; fail if missing or malformed
+    front_cfg = cfg.get("front", None)
+    if not isinstance(front_cfg, dict):
+        raise ValueError(
+            "Model YAML missing 'front' mapping with keys 'ec_target', 'gthr', 'energy_ref', 'width_frac'"
+        )
+    for k in ("ec_target", "gthr", "energy_ref", "width_frac"):
+        if k not in front_cfg:
+            raise ValueError(f"Model YAML missing front key '{k}'")
+
     out = {
         "version": int(cfg["version"]),
         "so": float(const["so_uS_cm"]),
@@ -209,6 +263,7 @@ def read_model_yaml(yml):
         "energy_coef": float(phys.get("energy_coef", 0.0)),
         "beta_log10": float(gmod["beta_log10"]),
         "npow": float(gmod["npow"]),
+        "npow_tide": float(gmod.get("npow_tide", float(gmod["npow"]))),
         "g0": float(gmod.get("g0", 5000.0)),
         "b0": float(inner["b0"]),
         "b1": float(inner["b1"]),
@@ -219,6 +274,12 @@ def read_model_yaml(yml):
             "centering": str(fs.get("centering", "causal")),
         },
         "afilt": [float(a) for a in afilt],
+        "front": {
+            "ec_target": float(front_cfg["ec_target"]),
+            "gthr": float(front_cfg["gthr"]),
+            "energy_ref": float(front_cfg["energy_ref"]),
+            "width_frac": float(front_cfg["width_frac"]),
+        },
     }
     validate_model(out)
     return out
@@ -252,11 +313,18 @@ def write_model_yaml(model, yml):
         "g_model": {
             "beta_log10": float(model["beta_log10"]),
             "npow": float(model["npow"]),
+            "npow_tide": float(model.get("npow_tide", model["npow"])),
             "g0": float(model.get("g0", 5000.0)),
         },
         "physics": {
             "area_coef": float(model.get("area_coef", 0.0)),
             "energy_coef": float(model.get("energy_coef", 0.0)),
+        },
+        "front": {
+            "ec_target": float(model["front"]["ec_target"]),
+            "gthr": float(model["front"]["gthr"]),
+            "energy_ref": float(model["front"]["energy_ref"]),
+            "width_frac": float(model["front"]["width_frac"]),
         },
         "inner_linear": {
             "b0": float(model["b0"]),
@@ -276,7 +344,7 @@ def read_fit_run_yaml(yml):
         try:
             cfg = yaml.safe_load(stream)
         except yaml.YAMLError as exc:
-            print(exc)
+            logger.exception("Failed to read fit-run YAML %s: %s", yml, exc)
             raise
     if isinstance(cfg, dict) and "fit_run" in cfg:
         return cfg["fit_run"] or {}
@@ -288,7 +356,7 @@ def read_fit_yaml(yml):
         try:
             config = yaml.safe_load(stream)
         except yaml.YAMLError as exc:
-            print(exc)
+            logger.exception("Failed to read fit YAML %s: %s", yml, exc)
             raise
 
     log10beta = config["log10gbeta"]
@@ -344,13 +412,9 @@ def write_fit_yaml(x_res, coefs, k0, fitting_config, yml):
     config = {
         "so": float(so),
         "sb": float(sb),
-        "area_coef": float(
-            x_res[2] * 3600 * 1000000.0
-        ),  
-        "energy_coef": float(
-            x_res[3] * 1000.0
-        ),  
-        "log10gbeta": float(x_res[0]),  
+        "area_coef": float(x_res[2] * 3600 * 1000000.0),
+        "energy_coef": float(x_res[3] * 1000.0),
+        "log10gbeta": float(x_res[0]),
         "npow": float(x_res[1]),  # x[1] from ec_boundary_fit_gee.py printout
         "b0": float(coefs["const"]),  # from const coef result
         "b1": float(coefs["gnpow"] * 0.001),  # from gnpow coef result

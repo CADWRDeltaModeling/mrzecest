@@ -7,6 +7,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from dms_datastore.read_ts import read_ts
 from ndo_chooser import get_ndo
+import numpy as np
 
 
 def main():
@@ -45,13 +46,13 @@ def main():
     obs_ec = obs_ec.loc[valid_start:valid_end]
     obs_ec15 = obs_ec15.loc[valid_start:valid_end]
 
-    x_res, coefs, pred_df = fit_mrz_ecest(
+    x_res, coefs, pred_df, front_spec = fit_mrz_ecest(
         config, elev=elev, ndo=ndo15, ec_obs=obs_ec15
     )
 
     # Build the canonical model dict from the fit result and fitting config.
     # This keeps constants (so/sb) and filter setup single-sourced.
-    model = build_model_from_fit(config, x_res, coefs)
+    model = build_model_from_fit(config, x_res, coefs, front_spec=front_spec)
     write_model_yaml(model, "model.yaml")
 
     eval_start = pd.Timestamp("2006-01-01")
@@ -64,6 +65,7 @@ def main():
 
     mrzecest = ec_est_yaml(ndo_in, elev_in, "model.yaml")
 
+    ####
     obs_ec_plot = obs_ec.loc[eval_start:eval_end]
 
     fig, ax = plt.subplots(1)

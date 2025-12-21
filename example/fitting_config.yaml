@@ -1,30 +1,52 @@
 envvar:
   fit_suffix: v1
+
 output_file: fit_version1.csv
-so: 100000.
-sb: 120.0
+so: 55000.0  # Sea water approximately. This is a backup. Optimized may be bound lower
+sb: 200.0
+
 filter_setup:
   dt: 3h
   k0: 6
   filter_length: 13
   centering: causal
+
 fit_run:
-  start: "2004-06-05"
-  end: "2018-01-01"
-  solver: powell #L-BFGS-B  #powell
+  #start: "2013-06-05"
+  #end: "2018-12-29"
+  start: "2004-06-05"       # The fitting period. Data must amply cover this period
+  end: "2016-12-29"
+  solver: powell            # L-BFGS-B  or powell. L-BFGS-B is faster, but tends to get stuck
   tol: 5e-3
-  outer_params:
-    - key: beta_log10
-      x0: 10.7
-      bounds: [8.0, 12.0]
-    - key: npow
-      x0: 0.4
-      bounds: [0.15, 1.]
-    - key: area_coef
-      scale: 3600e6
-      x0: -0.5
-      bounds: [-2, 0]
+  inner:
+    b0:                     # if omitted b0 will be fitted. This changes the values/interpretation of the other parameters
+      fix: true             # fixing it to zero establishes sb as the "asymptotic low" value of EC.
+      value: 0.0            # There seems to be little benefit making bo != 0., but we allowed for the possibility early on
+  outer_params:  
+    - key: beta_log10       # Original units are [cfs] * T where T is time. 
+      x0: 10.32              # ~ 10 is typical for cfs and seconds
+      bounds: [9.5, 11.5]   # past examples have had a narrow range, but reparameterization could change that
+    - key: npow             # an added shape factor
+      x0: 0.62
+      bounds: [0.2, 0.8]   
+    - key: area_coef        # Monismith had this at about 3x10^9 sq ft (he used meters, but we use feet here)
+      scale: 1e9
+      x0: -2.97
+      bounds: [-3., 0]      # Up to Monismith estimate
     - key: energy_coef
       scale: 1000.0
-      x0: 0.88
-      bounds: [0., 1.25]
+      x0: 3.59
+      bounds: [0., 6.]
+    - key: so          # if omitted, borrowed from so at top of spec
+      x0: 0.55
+      bounds: [0.4, 0.55] # Ocean salinity would be 55,000uS/cm (0.55 here) or so EC. 
+                          # That is an upper bound here. We set it 
+                          # Slightly lower to allow the algorith to adjust upper bound saturation.
+                          # If you set so=1.0, there would be no saturation  
+                          # If you set it high, the fit will bolt for that boundary, which sets up some
+                          # identfication problems with other parameters. This range keeps it from doing that
+      scale: 100000.0
+    - key: npow_tide   # if omitted, borrowed from npow
+      x0: 0.376        # Shapeing factor for the tidal fluctuation
+      bounds: [0.2, 0.8]
+      scale: 1.0         
