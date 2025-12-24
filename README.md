@@ -1,91 +1,237 @@
-# mrzecest
-## Martinez EC Estimator
 
-### Math of it All
+
+# mrzecest  
+## Martinez Electrical Conductivity (EC) Estimator
 
 The estimator uses a few things, derived from [Chapter 11 of the 22nd Annual Progress Report](https://sitesreservoirproject.riptideweb.com/references/REF23/Volume%202/App05A1_Surface_H2O_Model_Assum/Ateljevich_2001_Chapter_11_Improving_Salinity_Estimates.pdf):
+The formulation is revised here.
 
-#### NDOI
+`mrzecest` estimates electrical conductivity (EC) at Martinez using Net Delta Outflow (NDO) and tidal information.  
+The formulation follows the conceptual framework developed in Chapter 11 of the 2001 Annual Progress Report, expressed in a modern, internally consistent form suitable for fitting and operational evaluation.
 
-The Net Delta Outflow Index is calculated by:
+The estimator combines:
+- **Antecedent transport dynamics** (the Denton *g-model*),
+- **Tidal phasing effects** represented through a lagged elevation filter,
+- **Energy-dependent stratification effects** that modulate effective transport,
+- A **log-linear EC kernel** with physically interpretable bounds.
+
+The intent is not to reproduce EC point-by-point, but to capture the dominant transport and tidal controls governing salt intrusion at the seaward boundary of the Delta.
+
+---
+
+## Overview of the Algorithm
+
+At a high level, the estimator proceeds in four stages:
+
+1. **Construct physically meaningful features** from NDO and water level.
+2. **Evolve antecedent transport** using a nonlinear storage model.
+3. **Apply stratification-dependent corrections** tied to tidal energy and transport regime.
+4. **Map transport and tidal phase to EC** through a bounded log-linear kernel.
+
+Each step is described below.
+
+---
+
+## Inputs and Preprocessing
+
+### Required Inputs
+
+- **Net Delta Outflow (NDO)**  
+  A regular time series (15-minute or hourly) representing Delta outflow in cfs.
+
+- **Water surface elevation at Martinez**  
+  A regular time series at the same temporal resolution as NDO, with sufficient padding to support filtering.
+
+No internal interpolation or gap filling is performed. Inputs must be complete and uniformly sampled.
+
+---
+
+### Feature Construction
+
+All filtering and derived quantities are built once using a common routine:
+
+- **Subtidal elevation**  
+  A cosine–Lanczos low-pass filter applied to water level.
+
+- **Tidal elevation**  
+  The residual between raw elevation and subtidal elevation.
+
+- **Tidal energy proxy**  
+  A low-pass filtered version of squared tidal elevation.
+
+- **Time derivative of subtidal elevation**  
+  A centered finite difference, used to represent effective surface-area exchange.
+
+- **Lagged tidal matrix**  
+  A set of phase-shifted tidal elevations:
 
 $$
-\text{NDOI} = \text{San Joaquin River} + \text{Sacramento River (I St)} + \text{Yolo Bypass} + \text{Calaveras} + \text{Cosumnes} + \text{Mokelumne} - \text{Northbay Aqueduct} - \text{Exports} - \text{Consumptive Use}
+z_k(t) = z\bigl(t + (k_0 - k)\,\Delta t\bigr)
 $$
 
-This is an imperfect specification given the diversity of Consumptive Use calculations. So take this with a grain of salt.
+These are **not summed initially**; the summation happens inside the EC kernel.
 
-NDOI is then modified by the tidal energy and tidal filter in the **ndo_mod** function.
+This design ensures strict time alignment and eliminates ambiguity about where filtering occurs.
 
-$$
-NDO_{mod} = q = NDOI + c_{area} \langle z \rangle + c_{energy} \langle (z - \langle z \rangle )^2 \rangle
-$$
+---
 
-where $\langle z \rangle$ is cosine-lancsoz filtered tidal data at Martinez (aka subtide), $c_{area}$ is the area coeficient for the estuary, $c_{energy}$ is the tidal energy coefficient, and $\langle (z - \langle z \rangle )^2 \rangle$ is tidal energy at Martinez.
+## Modified Net Delta Outflow
 
-#### G-Model
-
-The G model, due to Denton, evolves "antecedent outflow" `g(t)` using the following equation:
-$$
-\frac{dg}{dt} = \frac{g(t)(q(t) - g(t))}{\beta}
-$$
-
-Which can be discretized using a Crank Nicolson scheme (which tends to be sufficiently positivity preserving)
-$$
-\frac{g_{n+1}-g_n}{\Delta t} = \frac{1}{2}\left[\frac{g_n(q_n-g_n)}{\beta}+\frac{g_{n+1}\left(q_{n+1}-g_{n+1}\right)}{\beta}\right]
-$$
-
-where $q$ is the adjusted Net Delta Outflow Index or $NDO_{mod}$. After solving for $g_{n+1}$:
+The estimator works with a *modified* outflow signal:
 
 $$
-g_{n+1}=\frac{\left(q_{n+1}+\frac{2\beta}{\Delta t}\right) \pm \sqrt{\left(q_{n+1}+\frac{2\beta}{\Delta t}\right)^2-4\left[g_n \left(q_n + \frac{2\beta}{\Delta t}\right)\right]}}{2}
+q_{\text{base}}(t) = \text{NDO}(t) + c_{\text{area}} \,\frac{d}{dt}\langle z \rangle
 $$
 
-this is solved in ec_boundary.py using the **gcalc** function.
+where:
+- $\langle z \rangle$ is subtidal elevation,
+- $c_{\text{area}}$ is a fitted coefficient representing effective estuarine surface area.
 
+At this stage, no tidal-energy correction is applied. This “base” signal defines the transport regime.
 
-#### EC Formula
+---
 
-$$
-\ln\left( \frac{S(t) - S_b}{S_0 - S_b} \right) = \beta_0 + \beta_1 \ g(t)^n + g(t)^n \sum_{k=0}^{n_k-1} a_k \ z_{t + k_0 \Delta t - k \Delta t}
-$$
+## Antecedent Transport (g-Model)
 
-where $S$ is salinity, $S(t)$ is salinity at the current timestep, $S_0$ is the ocean salinity, and $S_b$ is river salinity. $\beta_1$ is the g-model weight (unrelated to $\beta$ in the g-model formulation), $n$ is the n-power coefficient, and $a_k$ is the $k^{th}$ coefficient for the $z$ value at that timestep. The values of $k$ generate the time offsets for this term. The EC formula is solved in the **ec_kernel** function. It is also used in the **outer_fit** in `ec_boundary_fit_gee.py` in building the *preds* variable.
-
-##### $Z_{sum}$ term
-
-The $z_{sum}$ term is represented by:
+Transport memory is represented by the Denton *g-model*:
 
 $$
-\sum_{k=0}^{n_k-1} a_k \, z_{t + k_0 \Delta t - k \Delta t}
+\frac{dg}{dt} = \frac{g\,(q - g)}{\beta}
 $$
 
-This essentially takes into account which point in the tidal cycle you are in. This is resolved in the **z_sum_term** function. To set up the parameters for $z_{sum}$, you can specify the $a_{k}$ coefficients as an array in *filt_coefs*, the timestep in *filter_dt*, and the $k_0$ value in *filter_k0*. As an example:
+This equation describes how antecedent transport $g(t)$ evolves toward the current forcing $q(t)$ with a characteristic time scale controlled by $\beta$.
 
-If $k_0=6$, $dt=3$ hours, $a=[0.014\cdot10^{-3}, 0.87\cdot10^{-3}, -0.734\cdot10^{-3}, 0.596\cdot10^{-3}, -0.89\cdot10^{-3}, -0.527\cdot10^{-3}]$ then the filter_len is 6 and the $z_{sum}$ term would look like:
+In discrete time, the model is solved using an implicit trapezoidal (Crank–Nicolson) scheme, which is stable and preserves positivity for realistic parameter ranges.
+
+The result is a smooth, history-aware transport proxy that responds gradually to changes in NDO.
+
+---
+
+## Stratification and Energy Effects
+
+### Motivation
+
+Observed EC behavior shows that transport efficiency changes with tidal energy and flow regime.  
+Rather than applying tidal energy as a direct additive term, the estimator adjusts **effective transport** in a regime-aware manner.
+
+---
+
+### Transport Regime Weighting
+
+A **soft frontal weight** is constructed from the base transport:
 
 $$
-z_{sum} = 
-a_1\cdot z_{t+k_0 \Delta t - 0 \Delta t} + 
-a_2\cdot z_{t+k_0 \Delta t - 1 \Delta t} + 
-a_3\cdot z_{t+k_0 \Delta t - 2 \Delta t} + \\
-a_4\cdot z_{t+k_0 \Delta t - 3 \Delta t} + 
-a_5\cdot z_{t+k_0 \Delta t - 4 \Delta t} + 
-a_6\cdot z_{t+k_0 \Delta t - 5 \Delta t}
-\\ = 
-0.014\cdot10^{-3}\cdot z_{(t+6 \cdot 3) h} + 
-0.87\cdot10^{-3}\cdot z_{(t+6 \cdot 3 - 1 \cdot 3) h} + 
--0.734\cdot10^{-3}\cdot z_{(t+6 \cdot 3 - 2 \cdot 3) h} + \\
-0.596\cdot10^{-3}\cdot z_{(t+6 \cdot 3 - 3 \cdot 3) h} + 
--0.89\cdot10^{-3}\cdot z_{(t+6 \cdot 3 - 4 \cdot 3) h} + 
--0.527\cdot10^{-3}\cdot z_{(t+6 \cdot 3 - 5 \cdot 3) h}
-\\ = 
-0.014\cdot10^{-3}\cdot z_{t+18 ~h} + 
-0.87\cdot10^{-3}\cdot z_{t+15 ~h} + 
--0.734\cdot10^{-3}\cdot z_{t+12 ~h} + \\
-0.596\cdot10^{-3}\cdot z_{t+9 ~h} +
--0.89\cdot10^{-3}\cdot z_{t+6 ~h} + 
--0.527\cdot10^{-3}\cdot z_{t+3 ~h}
+w_{\text{front}}(t)
+= \frac{1}{1 + \exp\!\left[-\frac{g_{\text{base}}(t) - g_{\text{thr}}}{\alpha\,g_{\text{thr}}}\right]}
 $$
 
-so that each value of z has a summed lag term that's used in the EC formula.
+- $g_{\text{thr}}$ is the transport level corresponding to a reference EC (e.g. 20 mS/cm) under mean tidal conditions.
+- The transition width scales with $g_{\text{thr}}$, making the weighting dimensionless and robust.
+
+This smoothly distinguishes background conditions from strong frontal exchange.
+
+---
+
+### Energy Weighting
+
+Tidal energy modulates the strength of stratification effects:
+
+$$
+w_{\text{energy}}(t) = \frac{1}{1 + E(t)/E_{\text{ref}}}
+$$
+
+Low-energy conditions allow stronger stratification influence; high-energy conditions suppress it.
+
+---
+
+### Stratification Correction
+
+The final correction applied to transport is:
+
+$$
+\Delta q(t) = c_{\text{energy}} \; w_{\text{front}}(t)\; w_{\text{energy}}(t)
+$$
+
+The **effective forcing** driving the g-model becomes:
+
+$$
+q(t) = q_{\text{base}}(t) - \Delta q(t)
+$$
+
+The g-model is then recomputed using this corrected forcing.
+
+---
+
+## EC Kernel
+
+Electrical conductivity is modeled using a bounded log-linear relationship:
+
+$$
+\ln \left(
+\frac{EC(t) - S_b}{S_o - S_b}
+\right)
+= \beta_0 + \beta_1 \, g(t)^{n_{\text{mean}}}
++
+$$
+$$
+g(t)^{n_{\text{tide}}} \sum_{k} a_k \, z_k(t)
+$$
+
+
+where:
+- $S_o$ is ocean EC,
+- $S_b$ is background (river) EC,
+- $\beta_0$ and $\beta_1$ are fitted coefficients,
+- $n_{\text{mean}}$ controls sensitivity of the mean EC response to transport,
+- $n_{\text{tide}}$ controls how tidal phasing scales with transport,
+- $a_k$ are lagged tidal coefficients.
+
+Using separate exponents for mean and tidal components allows the model to represent cases where tidal modulation strengthens or weakens differently than the mean salt field.
+
+The exponential form ensures EC always lies between $S_b$ and $S_o$.
+
+---
+
+## Model Fitting
+
+Fitting is performed in two nested steps:
+
+1. **Outer optimization**  
+   Searches over physically meaningful nonlinear parameters:
+   - $\log_{10}\beta$
+   - $n_{\text{mean}}$
+   - $n_{\text{tide}}$
+   - area coefficient
+   - energy coefficient
+   - (optionally) ocean salinity
+
+2. **Inner conditional fit**  
+   Given $g(t)$, the EC kernel is fit using a Gamma GLM with a log link.
+
+This separation keeps the optimization stable and interpretable, while allowing flexible nonlinear structure.
+
+---
+
+## Getting Started
+
+### Fitting a Model
+
+```python
+from mrzecest.ec_boundary_fit import fit_mrz_ecest
+from mrzecest.fitting_util import build_model_from_fit, write_model_yaml
+
+x_res, coefs, ypred, front_spec = fit_mrz_ecest(
+    "fitting_config.yaml",
+    elev=elev_series,
+    ndo=ndo_series,
+    ec_obs=observed_ec
+)
+
+model = build_model_from_fit(
+    "fitting_config.yaml",
+    x_res,
+    coefs,
+    front_spec=front_spec
+)
+
+write_model_yaml(model, "model.yaml")
