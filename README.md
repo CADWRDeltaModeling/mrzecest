@@ -116,8 +116,19 @@ The result is a smooth, history-aware transport proxy that responds gradually to
 
 ### Motivation
 
-Observed EC behavior shows that transport efficiency changes with tidal energy and flow regime.  
+Observed EC behavior shows that transport efficiency changes with tidal energy and flow regime. Specifically, at Martinez salinity
+intrusion "explodes" during very weak neap tides when flow is modest and the longitudinal gradient is near Martinez. During these
+periods, the time scale of transport is practically zero. In 3D we usually see very large (e.g. 10psu in practical salinity units) 
+surface-bottom stratification at local sites. The stratification builds from tide cycle to tide cycle, an incipient form of 
+what Stacey and Monismith called "runaway stratification". 
+
 Rather than applying tidal energy as a direct additive term, the estimator adjusts **effective transport** in a regime-aware manner.
+
+The term "front" below refers both to the physical environment conditions (salinity front is passing Martinez) and to the way the 
+effect is modeled as an adjstment to $g_{\text{thr}}$, with the adjustment activated for low-medium values of salinity and then 
+ramped away at values above 20ms/cm. For higher values of salinity, the dominant transport mechanisms are variants
+of tidal stirring and the jet-sink balance at Benicia. Salinity intrusion is driven more by spring tide at that point, and the
+effect is hard to incorporate because of colinearity with other factors such as subtidal filling and draining.
 
 ---
 
