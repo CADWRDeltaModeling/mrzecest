@@ -101,7 +101,12 @@ $$
 
 This equation describes how antecedent transport $g(t)$ evolves toward the current forcing $q(t)$ with a characteristic time scale controlled by $\beta$.
 
-In discrete time, the model is solved using an implicit trapezoidal (Crank–Nicolson) scheme, which is stable and preserves positivity for realistic parameter ranges.
+In discrete time, the model is solved using an implicit trapezoidal (Crank–Nicolson) scheme, which is stable and preserves positivity for realistic parameter ranges. 
+The model can survive period of negative outflow, which is fairly common both in the field and in the model input when things like the filling and draining (area-based)
+correction or energy is considered. In this case simply delaying or anticipating the start of integration by a week usually does the trick. 
+Once the model gets Cranking it usually traverses periods of negative q very well, producing positive g (the continuum equation does not have the negative g problem,
+that is just an artifact of integration). It is possible with a transformation to fix even the initial values, but we haven't prioritized this. 
+Do NOT floor the modeified inflow -- it is a natural reaction, but it is significant and not correct.  
 
 The result is a smooth, history-aware transport proxy that responds gradually to changes in NDO.
 
