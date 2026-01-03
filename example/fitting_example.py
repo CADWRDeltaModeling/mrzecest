@@ -8,11 +8,18 @@ import matplotlib.pyplot as plt
 from dms_datastore.read_ts import read_ts
 from ndo_chooser import get_ndo
 import numpy as np
+import logging
 
 
 def main():
+
+    logging.basicConfig(
+      level=logging.INFO,   # or DEBUG
+      format="%(levelname)s %(name)s: %(message)s",
+    )
+
     config = "fitting_config.yaml"
-    ndo_source = "dayflow"  # "dsm2" or "dayflow"
+    ndo_source = "dsm2"  # "dsm2" or "dayflow"
     ndo15 = get_ndo(ndo_source, "15min")
 
     elev = pd.read_csv(
