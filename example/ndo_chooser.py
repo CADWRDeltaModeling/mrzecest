@@ -15,8 +15,8 @@ def get_ndo(ndo_source: str, freq) -> pd.Series:
         ndo = ndo_dsm
     elif ndo_source == "dayflow":
         ndo2 = read_ts(
-            "//cnrastore-bdo/Modeling_Data/archive_repo/repo_staging/dropbox/formatted/dayflow_ndoi_ndoi_flow*.csv"
-        ).loc["2000":"2025"]
+            "//cnrastore-bdo/Modeling_Data/dayflow/dayflow_ndoi_flow_2000_9999.csv"
+        ).loc["2000":"2025",:]
         ndo2 = ndo2.squeeze()
         ndo2.loc[ndo2 < -2000.0] = np.nan
         ndo2 = ndo2.interpolate(limit=4)

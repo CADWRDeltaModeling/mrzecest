@@ -699,6 +699,7 @@ def ec_est(
             {
                 "g": gv,
                 "z_sum": np.asarray(z_sum, dtype=float),
+                "q": ndomod["ndo"].to_numpy(dtype=float),
                 "mean_term": mean_term,
                 "tide_term": tide_term,
                 "ec": ec.to_numpy(dtype=float),
