@@ -2,10 +2,33 @@ import pytest
 from mrzecest.fitting_util import read_model_yaml
 
 
-def test_read_model_yaml_fails_when_front_missing():
-    # example/model.yaml currently lacks a 'front' block and should raise
+def test_read_model_yaml_fails_when_front_missing(tmp_path):
+    # A model YAML lacking a 'front' block should raise
+    yml = tmp_path / "model_no_front.yaml"
+    content = """
+version: 1
+constants:
+  sb_uS_cm: 200.0
+  so_uS_cm: 55000.0
+filter_setup:
+  dt: 3h
+  k0: 6
+  filter_length: 1
+  centering: causal
+  afilt: [0.0]
+g_model:
+  beta_log10: 10.0
+  npow: 0.5
+physics:
+  area_coef: 0.0
+  energy_coef: 0.0
+inner_linear:
+  b0: 0.0
+  b1: 0.0
+"""
+    yml.write_text(content)
     with pytest.raises(ValueError):
-        read_model_yaml("example/model.yaml")
+        read_model_yaml(str(yml))
 
 
 def test_read_model_yaml_with_front_passes(tmp_path):
@@ -25,6 +48,8 @@ filter_setup:
 g_model:
   beta_log10: 10.0
   npow: 0.5
+  g_thr_tide: 20000.0
+  width_frac_tide: 0.6
 physics:
   area_coef: 0.0
   energy_coef: 0.0

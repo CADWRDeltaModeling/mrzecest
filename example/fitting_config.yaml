@@ -4,6 +4,8 @@ envvar:
 output_file: fit_version1.csv
 so: 55000.0  # Sea water approximately. This is a backup. Optimized may be bound lower
 sb: 200.0
+width_frac_tide: 0.6  # fractional width of the bounded tidal gate W(g)=sigmoid((g-g_thr_tide)/(width_frac_tide*g_thr_tide));
+                      # broad => a high plateau across the saline range rather than a sharp bump.
 
 filter_setup:
   dt: 3h
@@ -14,14 +16,20 @@ filter_setup:
 fit_run:
   #start: "2013-06-05"
   #end: "2018-12-29"
-  start: "2004-06-05"       # The fitting period. Data must amply cover this period
-  end: "2016-12-29"
+  #start: "2004-06-05"       # The fitting period. Data must amply cover this period
+  #end: "2016-12-29"
+  start: "2018-06-05"       # The fitting period. Data must amply cover this period
+  end: "2024-09-30"  
   solver: powell            # L-BFGS-B  or powell. L-BFGS-B is faster, but tends to get stuck
   tol: 5e-3
   inner:
     b0:                     # if omitted b0 will be fitted. This changes the values/interpretation of the other parameters
       fix: true             # fixing it to zero establishes sb as the "asymptotic low" value of EC.
       value: 0.0            # There seems to be little benefit making bo != 0., but we allowed for the possibility early on
+    weight_power: 0.0       # high-EC weighting for the inner Gamma GLM: var_weights = y**weight_power.
+                            # 0 = unweighted (original). Tried 1.0: it destabilized the fit (energy_coef
+                            # collapsed) and worsened the amplitude rising limb without lifting the plateau,
+                            # so reverted to 0. Kept as a knob.
   outer_params:  
     - key: beta_log10       # Original units are [cfs] * T where T is time. 
       x0: 10.32              # ~ 10 is typical for cfs and seconds
@@ -46,7 +54,11 @@ fit_run:
                           # If you set it high, the fit will bolt for that boundary, which sets up some
                           # identfication problems with other parameters. This range keeps it from doing that
       scale: 100000.0
-    - key: npow_tide   # if omitted, borrowed from npow
-      x0: 0.376        # Shapeing factor for the tidal fluctuation
-      bounds: [0.2, 0.8]
+    - key: g_thr_tide      # transport threshold (cfs) for the bounded tidal gate W(g)
+      x0: 27000            # knee near EC ~ 10,000 uS/cm; last fit landed ~27k
+      bounds: [5000, 60000]
+      scale: 1.0
+    - key: width_frac_tide # fractional width of the tidal gate; smaller => sharper roll-off at
+      x0: 0.35             # high salinity so the amplitude flattens/declines instead of climbing
+      bounds: [0.15, 1.0]
       scale: 1.0         

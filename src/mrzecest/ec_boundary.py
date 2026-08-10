@@ -409,7 +409,7 @@ def build_common_features(
     return out
 
 
-def ec_est_yaml(ndo, elev, yaml_fn, start=None, end=None):
+def ec_est_yaml(ndo, elev, yaml_fn, start=None, end=None, return_components=False):
     """Estimate EC using a model specification YAML."""
 
     model = read_model_yaml(yaml_fn)
@@ -417,7 +417,6 @@ def ec_est_yaml(ndo, elev, yaml_fn, start=None, end=None):
 
     fs = model["filter_setup"]
     npow = float(model["npow"])
-    npow_tide = float(model.get("npow_tide", npow))
     front = model.get("front")
 
     return ec_est(
@@ -429,7 +428,6 @@ def ec_est_yaml(ndo, elev, yaml_fn, start=None, end=None):
         model["b0"],
         model["b1"],
         npow,
-        npow_tide,
         fs["k0"],
         model["afilt"],
         pd.Timedelta(fs["dt"]),
@@ -439,8 +437,11 @@ def ec_est_yaml(ndo, elev, yaml_fn, start=None, end=None):
         front_gthr=float(front["gthr"]),
         front_energy_ref=float(front["energy_ref"]),
         front_width_frac=float(front["width_frac"]),
+        g_thr_tide=float(model["g_thr_tide"]),
+        width_frac_tide=float(model.get("width_frac_tide", 0.6)),
         start=start,
         end=end,
+        return_components=return_components,
     )
 
 
@@ -453,7 +454,6 @@ def ec_est(
     beta0,
     beta1,
     npow,
-    npow_tide,
     filter_k0,
     filt_coefs,
     filter_dt,
@@ -463,8 +463,11 @@ def ec_est(
     front_gthr,
     front_energy_ref,
     front_width_frac,
+    g_thr_tide,
+    width_frac_tide=0.6,
     start=None,
     end=None,
+    return_components=False,
 ):
     """
     Estimate electrical conductivity (EC) at the Martinez boundary using the g-model.
@@ -672,7 +675,10 @@ def ec_est(
 
     ec = pd.Series(index=eval_index, dtype=float)
     logger.debug("solving for ec")
-    ec.iloc[:] = ec_kernel(g.to_numpy(), z_sum, beta0, beta1, npow, npow_tide, so, sb)
+    width_tide = max(1e-6, float(width_frac_tide) * float(g_thr_tide))
+    ec.iloc[:] = ec_kernel(
+        g.to_numpy(), z_sum, beta0, beta1, npow, so, sb, g_thr_tide, width_tide
+    )
     logger.debug("done")
 
     ec = ec.loc[eval_index]
@@ -684,12 +690,35 @@ def ec_est(
         float(ec.min()),
     )
 
+    if return_components:
+        gv = g.loc[eval_index].to_numpy(dtype=float)
+        # Decompose the kernel exponent: ln((EC-sb)/(so-sb)) = mean_term + tide_term
+        mean_term = beta0 + beta1 * np.power(gv, npow)
+        tide_term = _sigmoid((gv - g_thr_tide) / width_tide) * np.asarray(z_sum, dtype=float)
+        components = pd.DataFrame(
+            {
+                "g": gv,
+                "z_sum": np.asarray(z_sum, dtype=float),
+                "mean_term": mean_term,
+                "tide_term": tide_term,
+                "ec": ec.to_numpy(dtype=float),
+            },
+            index=eval_index,
+        )
+        return ec, components
+
     return ec
 
 
 @numba.jit
-def ec_kernel(g, z_sum, beta0, beta1, npow, npow_tide, so, sb):
-    """numpy based kernel for ec(t) using numba."""
+def ec_kernel(g, z_sum, beta0, beta1, npow, so, sb, g_thr_tide, width_tide):
+    """numpy based kernel for ec(t) using numba.
+
+    The tidal term is gated by a bounded logistic W(g) in [0,1] that rises with g
+    (falls with salinity), so the *observable* EC tidal amplitude ~ (EC-sb)*W(g)
+    vanishes toward fresh (via the (EC-sb) prefactor) and holds a broad plateau at
+    high salinity, instead of the unbounded g**npow_tide factor.
+    """
 
     ec = np.empty(len(g), dtype=float)
     ntime = len(g)
@@ -700,9 +729,14 @@ def ec_kernel(g, z_sum, beta0, beta1, npow, npow_tide, so, sb):
             continue
 
         g_main = g[i] ** npow
-        g_tide = g[i] ** npow_tide
+        x = (g[i] - g_thr_tide) / width_tide
+        if x >= 0.0:
+            gate = 1.0 / (1.0 + np.exp(-x))
+        else:
+            ex = np.exp(x)
+            gate = ex / (1.0 + ex)
 
-        ecfrac = beta0 + beta1 * g_main + g_tide * z_sum[i]
+        ecfrac = beta0 + beta1 * g_main + gate * z_sum[i]
         ec[i] = np.exp(ecfrac) * (so - sb) + sb
 
     return ec

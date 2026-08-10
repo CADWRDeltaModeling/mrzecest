@@ -19,10 +19,12 @@ import pandas as pd
 import numpy as np
 from vtools import *
 import matplotlib.pyplot as plt
-from mrzecest.fitting_util import parse_config, validate_fit_config
+from mrzecest.fitting_util import parse_config, validate_fit_config, validate_model
 from mrzecest.ec_boundary import (
     gcalc,
     ndo_mod,
+    ec_kernel,
+    _sigmoid,
     _g_threshold_from_ec,
     _front_weight,
     build_common_features,
@@ -31,6 +33,7 @@ import statsmodels.api as sm
 from statsmodels.genmod.families.links import Log
 from statsmodels.genmod.families import Gamma
 import scipy
+import scipy.optimize
 import logging
 logger = logging.getLogger(__name__)
 
@@ -38,7 +41,7 @@ logger = logging.getLogger(__name__)
 calls = 0
 
 
-def _fit_glm_given_g(g, data, npow, npow_tide, sb, so, *, fix_b0: bool, b0_value: float):
+def _fit_glm_given_g(g, data, npow, sb, so, *, fix_b0: bool, b0_value: float, g_thr_tide: float, width_tide: float, weight_power: float = 0.0):
     """Fit inner GLM conditional on g (and data z-columns).
 
     Returns
@@ -51,7 +54,10 @@ def _fit_glm_given_g(g, data, npow, npow_tide, sb, so, *, fix_b0: bool, b0_value
     """
     family = sm.families.Gamma(Log())
     gnpow = g.pow(npow)
-    gpow_tide = g.pow(npow_tide)
+    # Bounded logistic tidal gate W(g) in [0,1]; replaces the unbounded g**npow_tide.
+    gpow_tide = pd.Series(
+        _sigmoid((g.to_numpy(dtype=float) - g_thr_tide) / width_tide), index=g.index
+    )
 
     y_ec = data.ec_obs
     y_ec = y_ec.clip(lower=sb + 1.0)
@@ -119,7 +125,12 @@ def _fit_glm_given_g(g, data, npow, npow_tide, sb, so, *, fix_b0: bool, b0_value
     else:
         offset_fit = None
 
-    mod = sm.GLM(y_fit, X_fit, family=family, offset=offset_fit)
+    # High-EC weighting: var_weights = y**weight_power up-weights high-salinity points
+    # so the (relative-error) Gamma deviance stops discounting the high-EC amplitude.
+    # weight_power = 0 -> all weights 1 (unweighted, original behavior).
+    var_weights_fit = np.power(y_fit.to_numpy(dtype=float), float(weight_power))
+
+    mod = sm.GLM(y_fit, X_fit, family=family, offset=offset_fit, var_weights=var_weights_fit)
     result = mod.fit()
     # Guard against pathological fits that technically return but are unusable.
     if not np.all(np.isfinite(result.params.to_numpy(dtype=float))):
@@ -232,10 +243,12 @@ def outer_fit(x, data, return_coefs=False, plot_fits=False):
     # Inner intercept handling (optional fixed b0)
     fix_b0 = bool(fit_spec.get("fix_b0", False))
     b0_value = float(fit_spec.get("b0_value", 0.0))
+    weight_power = float(fit_spec.get("weight_power", 0.0))
 
-
-    # npow_tide can be different from npow; if not provided, default == npow
-    npow_tide = float(pvals.get("npow_tide", npow))
+    # Bounded tidal gate: transport threshold (cfs) and fractional width.
+    g_thr_tide = float(pvals["g_thr_tide"])
+    width_frac_tide = float(pvals.get("width_frac_tide", fit_spec.get("width_frac_tide", 0.6)))
+    width_tide = max(1e-6, width_frac_tide * g_thr_tide)
 
     ndo = data.ndo
     ec_obs = data.ec_obs
@@ -273,8 +286,9 @@ def outer_fit(x, data, return_coefs=False, plot_fits=False):
     # First-pass GLM (conditional on g_base) to get beta0/beta1 for EC->g threshold
     try:
         result0, X0, y0, preds0, params0 = _fit_glm_given_g(
-            g_base, data, npow=npow, npow_tide=npow_tide, sb=sb, so=so,
-            fix_b0=fix_b0, b0_value=b0_value
+            g_base, data, npow=npow, sb=sb, so=so,
+            fix_b0=fix_b0, b0_value=b0_value, g_thr_tide=g_thr_tide, width_tide=width_tide,
+            weight_power=weight_power
         )
     except Exception as e:
         # Infeasible point in outer optimizer: return a huge penalty.
@@ -308,8 +322,9 @@ def outer_fit(x, data, return_coefs=False, plot_fits=False):
     # Final inner fit using the updated g
     try:
         result, X_clean, y_clean, preds, params = _fit_glm_given_g(
-            g, data, npow=npow, npow_tide=npow_tide, sb=sb, so=so,
-            fix_b0=fix_b0, b0_value=b0_value
+            g, data, npow=npow, sb=sb, so=so,
+            fix_b0=fix_b0, b0_value=b0_value, g_thr_tide=g_thr_tide, width_tide=width_tide,
+            weight_power=weight_power
         )
     except Exception as e:
         if return_coefs:
@@ -433,6 +448,7 @@ def fit_mrz_ecest(config, elev=None, ndo=None, ec_obs=None, plot_fits=False):
     inner = fit_run.get("inner", None)
     fix_b0 = False
     b0_value = 0.0
+    weight_power = 0.0
     if inner is not None:
         if not isinstance(inner, dict):
             raise ValueError("fit_run.inner must be a mapping if provided")
@@ -444,6 +460,7 @@ def fit_mrz_ecest(config, elev=None, ndo=None, ec_obs=None, plot_fits=False):
                 raise ValueError("fit_run.inner.b0 must include keys: fix, value")
             fix_b0 = bool(b0spec["fix"])
             b0_value = float(b0spec["value"])
+        weight_power = float(inner.get("weight_power", 0.0))
 
     # Outer parameters: beta_log10, npow, area_coef, energy_coef, so (optional)
     outer_params = fit_run.get("outer_params")
@@ -545,6 +562,8 @@ def fit_mrz_ecest(config, elev=None, ndo=None, ec_obs=None, plot_fits=False):
         "outer_params": outer_params,
         "fix_b0": bool(fix_b0),
         "b0_value": float(b0_value),
+        "width_frac_tide": float(config.get("width_frac_tide", 0.6)),
+        "weight_power": float(weight_power),
     }
     # solu_df.to_csv("test.csv", index=True, header=True, float_format="%.3f")
 
@@ -577,7 +596,7 @@ def fit_mrz_ecest(config, elev=None, ndo=None, ec_obs=None, plot_fits=False):
     summary_items = [
         ("beta_log10", pvals.get("beta_log10")),
         ("npow", pvals.get("npow")),
-        ("npow_tide", pvals.get("npow_tide")),
+        ("g_thr_tide", pvals.get("g_thr_tide")),
         ("area_coef", pvals.get("area_coef")),
         ("energy_coef", pvals.get("energy_coef")),
         ("so", pvals.get("so")),
@@ -592,3 +611,235 @@ def fit_mrz_ecest(config, elev=None, ndo=None, ec_obs=None, plot_fits=False):
     )
 
     return x_res, coefs, ypred, front_spec
+
+
+# Canonical order of the flat parameter vector used by the LS touch-up.
+_TOUCHUP_OUTER_KEYS = (
+    "beta_log10",
+    "npow",
+    "g_thr_tide",
+    "area_coef",
+    "energy_coef",
+    "so",
+)
+
+
+def _touchup_bounds(config, model, fix_b0=False):
+    """Build (lo, hi) physical-space bounds for the flat touch-up vector.
+
+    Outer parameters inherit bounds from ``fit_run.outer_params`` (expressed in
+    physical units by multiplying the scaled bounds by ``scale``). Inner linear
+    coefficients (b0, b1, afilt) are unbounded. When ``fix_b0`` is True, b0 is
+    held out of the optimized vector entirely.
+    """
+    cfg = config if isinstance(config, dict) else parse_config(config)
+    outer_params = (cfg.get("fit_run") or {}).get("outer_params") or []
+
+    phys_bounds = {}
+    for p in outer_params:
+        key = p.get("key")
+        if not key:
+            continue
+        scale = float(p.get("scale", 1.0))
+        b = p.get("bounds")
+        if not (isinstance(b, (list, tuple)) and len(b) == 2):
+            phys_bounds[key] = (-np.inf, np.inf)
+            continue
+        lo = -np.inf if b[0] is None else float(b[0]) * scale
+        hi = np.inf if b[1] is None else float(b[1]) * scale
+        phys_bounds[key] = (lo, hi)
+
+    lo_vec = []
+    hi_vec = []
+    for key in _TOUCHUP_OUTER_KEYS:
+        lo, hi = phys_bounds.get(key, (-np.inf, np.inf))
+        lo_vec.append(lo)
+        hi_vec.append(hi)
+
+    # Inner coefficients: (b0,) b1, afilt[k] -> unbounded. b0 omitted if fixed.
+    n_inner = (1 if fix_b0 else 2) + len(model["afilt"])
+    lo_vec.extend([-np.inf] * n_inner)
+    hi_vec.extend([np.inf] * n_inner)
+
+    return np.asarray(lo_vec, dtype=float), np.asarray(hi_vec, dtype=float)
+
+
+def _pack_touchup(model, fix_b0=False):
+    """Pack a canonical model dict into the flat LS vector (physical units).
+
+    When ``fix_b0`` is True, b0 is omitted (held fixed outside the optimizer).
+    """
+    outer = [float(model[k]) for k in _TOUCHUP_OUTER_KEYS]
+    inner = [] if fix_b0 else [float(model["b0"])]
+    inner.append(float(model["b1"]))
+    inner.extend(float(a) for a in model["afilt"])
+    return np.asarray(outer + inner, dtype=float)
+
+
+def _unpack_touchup(vec, model, fix_b0=False, b0_value=0.0):
+    """Unpack the flat LS vector back into an updated model dict.
+
+    Only the optimized fields are replaced; frozen structure (filter_setup,
+    front, g0, sb) is carried over from ``model``. When ``fix_b0`` is True, b0
+    is not read from ``vec`` and is set to ``b0_value``.
+    """
+    vec = np.asarray(vec, dtype=float)
+    n_outer = len(_TOUCHUP_OUTER_KEYS)
+    n_afilt = len(model["afilt"])
+    out = dict(model)
+    for i, key in enumerate(_TOUCHUP_OUTER_KEYS):
+        out[key] = float(vec[i])
+    if fix_b0:
+        out["b0"] = float(b0_value)
+        b1_idx = n_outer
+    else:
+        out["b0"] = float(vec[n_outer])
+        b1_idx = n_outer + 1
+    out["b1"] = float(vec[b1_idx])
+    out["afilt"] = [float(a) for a in vec[b1_idx + 1 : b1_idx + 1 + n_afilt]]
+    # front/filter_setup/g0/sb are inherited unchanged (frozen).
+    out["front"] = dict(model["front"])
+    out["filter_setup"] = dict(model["filter_setup"])
+    return out
+
+
+def touchup_least_squares(config, model, elev=None, ndo=None, ec_obs=None):
+    """Least-squares 'touch-up' of a fitted model, seeded at the GLM solution.
+
+    This performs a *local* Levenberg-Marquardt/TRF minimization of the plain
+    sum-of-squared residuals ``(EC_pred - EC_obs)`` in EC units, over all model
+    parameters simultaneously (the six outer/nonlinear parameters plus the inner
+    linear kernel coefficients b0, b1, and the lagged tidal coefficients afilt).
+
+    The stratification gating geometry from the baseline fit
+    (``model['front']`` : gthr, energy_ref, width_frac) is **frozen**, so the
+    touch-up is a well-defined local refinement around the original outcome
+    (up to bounds-hugging). Features are built once and reused every iteration.
+
+    Parameters
+    ----------
+    config : str or dict
+        Fitting configuration (used only for the outer-parameter bounds).
+    model : dict
+        Canonical model dict from the baseline fit (e.g. build_model_from_fit()).
+        Serves as the optimizer start point x0.
+    elev, ndo, ec_obs : pandas.Series
+        Elevation, Net Delta Outflow, and observed EC. The fit window is taken
+        from ``config['fit_run']`` start/end.
+
+    Returns
+    -------
+    model_ls : dict
+        Refined canonical model dict (validated).
+    result : scipy.optimize.OptimizeResult
+        The least_squares result object.
+    """
+    cfg = config if isinstance(config, dict) else parse_config(config)
+    validate_fit_config(cfg)
+
+    fit_run = cfg.get("fit_run") or {}
+    start = pd.to_datetime(fit_run["start"])
+    end = pd.to_datetime(fit_run["end"])
+
+    # Honor the baseline inner intercept convention: if b0 is fixed in the
+    # fitting config, hold it out of the LS vector too (apples-to-apples with
+    # the GLM fit rather than silently adding a degree of freedom).
+    inner_spec = fit_run.get("inner") or {}
+    b0spec = inner_spec.get("b0") or {}
+    fix_b0 = bool(b0spec.get("fix", False))
+    b0_value = float(b0spec.get("value", 0.0))
+
+    sb = float(model["sb"])
+    g0 = float(model.get("g0", 5000.0))
+    width_frac_tide = float(model.get("width_frac_tide", 0.6))
+    gthr = float(model["front"]["gthr"])
+    energy_ref = float(model["front"]["energy_ref"])
+    width_frac = float(model["front"]["width_frac"])
+
+    # Build all shared features exactly once on the fit window.
+    ctx = build_common_features(
+        ndo=ndo,
+        elev=elev,
+        filter_setup=cfg["filter_setup"],
+        pad=pd.Timedelta("9d"),
+        start=start,
+        end=end,
+    )
+    eval_index = ctx["eval_index"]
+    ndo_eval = ctx["ndo"]
+    d_elev_filt = ctx["d_elev_filt"]
+    energy = ctx["energy"].squeeze().astype(float)
+    Z = ctx["Z"].to_numpy(dtype=float)
+
+    obs = ec_obs.loc[eval_index].squeeze().astype(float).to_numpy()
+
+    # Static residual mask: finite observations, excluding row 0 (ec_kernel
+    # sets EC[0]=NaN by construction). Fixed across iterations so the residual
+    # vector length is constant.
+    mask = np.isfinite(obs)
+    mask[0] = False
+    if not mask.any():
+        raise ValueError("No finite observations on the fit window for LS touch-up.")
+    obs_masked = obs[mask]
+
+    low_energy_weight = 1.0 / (1.0 + (energy / energy_ref))
+    lew = low_energy_weight.to_numpy(dtype=float)
+
+    n_afilt = len(model["afilt"])
+    n_outer = len(_TOUCHUP_OUTER_KEYS)
+    PENALTY = 1.0e6
+
+    def residual(vec):
+        (beta_log10, npow, g_thr_tide, area_coef, energy_coef, so) = vec[:n_outer]
+        width_tide = max(1e-6, width_frac_tide * g_thr_tide)
+        if fix_b0:
+            b0 = b0_value
+            b1 = vec[n_outer]
+            afilt = vec[n_outer + 1 : n_outer + 1 + n_afilt]
+        else:
+            b0 = vec[n_outer]
+            b1 = vec[n_outer + 1]
+            afilt = vec[n_outer + 2 : n_outer + 2 + n_afilt]
+
+        ndomod_base = ndo_mod(ndo_eval, d_elev_filt, area_coef, energy, energy_coef).squeeze()
+        g_base = gcalc(ndomod_base, log10beta=beta_log10, g0=g0)
+        w_front = _front_weight(g_base, gthr, width_frac=width_frac)
+        strat_term = energy_coef * w_front.to_numpy(dtype=float) * lew
+        ndomod = (ndomod_base.to_numpy(dtype=float) - strat_term)
+        ndomod = pd.Series(ndomod, index=eval_index, name="ndo")
+        g = gcalc(ndomod, log10beta=beta_log10, g0=g0)
+
+        z_sum = Z @ np.asarray(afilt, dtype=float)
+        ec = ec_kernel(g.to_numpy(dtype=float), z_sum, b0, b1, npow, so, sb, g_thr_tide, width_tide)
+
+        res = ec[mask] - obs_masked
+        # Guard: replace any nonfinite residual (e.g. transient negative g under
+        # fractional power) with a large finite penalty so TRF steers away.
+        bad = ~np.isfinite(res)
+        if bad.any():
+            res = res.copy()
+            res[bad] = PENALTY
+        return res
+
+    x0 = _pack_touchup(model, fix_b0=fix_b0)
+    lo, hi = _touchup_bounds(cfg, model, fix_b0=fix_b0)
+    # Keep the start point strictly inside the bounds for TRF.
+    x0 = np.clip(x0, lo, hi)
+
+    result = scipy.optimize.least_squares(
+        residual,
+        x0,
+        bounds=(lo, hi),
+        method="trf",
+        x_scale="jac",
+    )
+    logger.info(
+        "LS touch-up finished: success=%s status=%s cost=%.6g",
+        result.success,
+        result.status,
+        float(result.cost),
+    )
+
+    model_ls = _unpack_touchup(result.x, model, fix_b0=fix_b0, b0_value=b0_value)
+    validate_model(model_ls)
+    return model_ls, result

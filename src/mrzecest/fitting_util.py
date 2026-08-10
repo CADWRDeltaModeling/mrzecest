@@ -165,7 +165,7 @@ def build_model_from_fit(config_yml, x_res, coefs, *, front_spec: dict) -> dict:
         scale = float(p.get("scale", 1.0))
         pvals[key] = float(x_res[i]) * scale
 
-    required_keys = {"beta_log10", "npow", "npow_tide", "area_coef", "energy_coef"}
+    required_keys = {"beta_log10", "npow", "g_thr_tide", "area_coef", "energy_coef"}
     missing = required_keys - set(pvals)
     if missing:
         raise ValueError(
@@ -183,7 +183,8 @@ def build_model_from_fit(config_yml, x_res, coefs, *, front_spec: dict) -> dict:
         "energy_coef": float(pvals["energy_coef"]),
         "beta_log10": float(pvals["beta_log10"]),
         "npow": float(pvals["npow"]),
-        "npow_tide": float(pvals.get("npow_tide", pvals["npow"])),
+        "g_thr_tide": float(pvals["g_thr_tide"]),
+        "width_frac_tide": float(pvals.get("width_frac_tide", cfg.get("width_frac_tide", 0.6))),
         "g0": float(cfg.get("g0", 5000.0)),
         "b0": float(coefs["const"]),
         "b1": float(coefs["gnpow"] * 0.001),
@@ -263,7 +264,8 @@ def read_model_yaml(yml):
         "energy_coef": float(phys.get("energy_coef", 0.0)),
         "beta_log10": float(gmod["beta_log10"]),
         "npow": float(gmod["npow"]),
-        "npow_tide": float(gmod.get("npow_tide", float(gmod["npow"]))),
+        "g_thr_tide": float(gmod["g_thr_tide"]),
+        "width_frac_tide": float(gmod.get("width_frac_tide", 0.6)),
         "g0": float(gmod.get("g0", 5000.0)),
         "b0": float(inner["b0"]),
         "b1": float(inner["b1"]),
@@ -313,7 +315,8 @@ def write_model_yaml(model, yml):
         "g_model": {
             "beta_log10": float(model["beta_log10"]),
             "npow": float(model["npow"]),
-            "npow_tide": float(model.get("npow_tide", model["npow"])),
+            "g_thr_tide": float(model["g_thr_tide"]),
+            "width_frac_tide": float(model.get("width_frac_tide", 0.6)),
             "g0": float(model.get("g0", 5000.0)),
         },
         "physics": {
@@ -333,6 +336,64 @@ def write_model_yaml(model, yml):
     }
     with open(yml, "w") as stream:
         yaml.safe_dump(out, stream, sort_keys=False, default_flow_style=False)
+
+
+def compare_metrics(obs, pred, so, sb):
+    """Compute contrast metrics between observed and predicted EC.
+
+    Returns three metrics that deliberately span different error philosophies:
+
+    - ``rmse`` : root-mean-square error in EC units (the LS touch-up criterion).
+    - ``mae``  : mean absolute error in EC units (a neutral L1 norm matching
+      neither fitting criterion).
+    - ``gamma_deviance`` : Gamma(Log) deviance on the normalized ratio
+      ``(EC - sb) / (so - sb)`` (the baseline GLM criterion).
+
+    Only timestamps where both series are finite are used. Inputs are aligned on
+    their common index.
+
+    Parameters
+    ----------
+    obs, pred : pandas.Series
+        Observed and predicted EC time series (EC units).
+    so, sb : float
+        Ocean and background EC bounds used to normalize for the deviance.
+
+    Returns
+    -------
+    dict
+        {'rmse': float, 'mae': float, 'gamma_deviance': float, 'n': int}
+    """
+    import statsmodels.api as sm
+    from statsmodels.genmod.families.links import Log
+
+    o = pd.Series(obs).squeeze().astype(float)
+    p = pd.Series(pred).squeeze().astype(float)
+    df = pd.concat([o.rename("obs"), p.rename("pred")], axis=1, join="inner")
+    df = df[np.isfinite(df["obs"]) & np.isfinite(df["pred"])]
+    if df.empty:
+        raise ValueError("No overlapping finite (obs, pred) samples to compare.")
+
+    resid = df["pred"].to_numpy() - df["obs"].to_numpy()
+    rmse = float(np.sqrt(np.mean(resid**2)))
+    mae = float(np.mean(np.abs(resid)))
+
+    so = float(so)
+    sb = float(sb)
+    if not (so > sb):
+        raise ValueError("Require so > sb for deviance normalization.")
+    eps = 1e-6
+    y = ((df["obs"].to_numpy() - sb) / (so - sb)).clip(min=eps)
+    mu = ((df["pred"].to_numpy() - sb) / (so - sb)).clip(min=eps)
+    family = sm.families.Gamma(Log())
+    gamma_deviance = float(family.deviance(y, mu))
+
+    return {
+        "rmse": rmse,
+        "mae": mae,
+        "gamma_deviance": gamma_deviance,
+        "n": int(len(df)),
+    }
 
 
 def read_fit_run_yaml(yml):

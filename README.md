@@ -37,7 +37,8 @@ Each step is described below.
 ### Required Inputs
 
 - **Net Delta Outflow (NDO)**  
-  A regular time series (15-minute or hourly) representing Delta outflow in cfs.
+  A regular time series (15-minute or hourly) representing Delta outflow in cfs. Common sources are Dayflow, DSM2 input 
+  or SCHISM input. 
 
 - **Water surface elevation at Martinez**  
   A regular time series at the same temporal resolution as NDO, with sufficient padding to support filtering.
@@ -180,31 +181,37 @@ The g-model is then recomputed using this corrected forcing.
 
 ## EC Kernel
 
-Electrical conductivity is modeled using a bounded log-linear relationship:
+Electrical conductivity is modeled with a bounded log-linear kernel. The tidal
+term is scaled by a **bounded logistic gate** $W(g)\in[0,1]$ (this replaces an
+earlier, unbounded $g^{n_{\text{tide}}}$ factor — see *Lessons Learned*):
 
 $$
-\ln \left(
-\frac{EC(t) - S_b}{S_o - S_b}
-\right)
+\ln\!\left(\frac{EC(t) - S_b}{S_o - S_b}\right)
 = \beta_0 + \beta_1 \, g(t)^{n_{\text{mean}}}
-+
-$$
-$$
-g(t)^{n_{\text{tide}}} \sum_{k} a_k \, z_k(t)
++ W\!\big(g(t)\big) \sum_{k} a_k \, z_k(t)
 $$
 
+$$
+W(g) = \sigma\!\left(\frac{g - g_{\text{thr}}^{\text{tide}}}{\text{width\_frac\_tide}\;\cdot\;g_{\text{thr}}^{\text{tide}}}\right),
+\qquad \sigma(x) = \frac{1}{1 + e^{-x}}
+$$
 
 where:
 - $S_o$ is ocean EC,
 - $S_b$ is background (river) EC,
-- $\beta_0$ and $\beta_1$ are fitted coefficients,
+- $\beta_0$ and $\beta_1$ are fitted mean-term coefficients,
 - $n_{\text{mean}}$ controls sensitivity of the mean EC response to transport,
-- $n_{\text{tide}}$ controls how tidal phasing scales with transport,
+- $g_{\text{thr}}^{\text{tide}}$ and $\text{width\_frac\_tide}$ set the location and sharpness of the tidal gate,
 - $a_k$ are lagged tidal coefficients.
 
-Using separate exponents for mean and tidal components allows the model to represent cases where tidal modulation strengthens or weakens differently than the mean salt field.
+Linearizing the exponential shows the observable EC tidal amplitude is
+approximately $(EC - S_b)\,W(g)\times(\text{tidal swing})$: it **vanishes toward
+fresh** through the $(EC - S_b)$ prefactor, and holds a **bounded plateau at high
+salinity** because $W(g)$ is bounded and rises with $g$ (falls with salinity).
 
-The exponential form ensures EC always lies between $S_b$ and $S_o$.
+Note: the exponential form guarantees a *lower* bound $EC \ge S_b$ (a floor); it
+does **not** by itself impose the upper bound $EC \le S_o$. In practice the fitted
+coefficients keep the exponent negative.
 
 ---
 
@@ -216,7 +223,7 @@ Fitting is performed in two nested steps:
    Searches over physically meaningful nonlinear parameters:
    - $\log_{10}\beta$
    - $n_{\text{mean}}$
-   - $n_{\text{tide}}$
+   - tidal-gate threshold $g_{\text{thr}}^{\text{tide}}$ and fractional width
    - area coefficient
    - energy coefficient
    - (optionally) ocean salinity
@@ -251,3 +258,64 @@ model = build_model_from_fit(
 )
 
 write_model_yaml(model, "model.yaml")
+```
+
+---
+
+## Lessons Learned
+
+Notes accumulated while revising the tidal formulation. These record *why* the
+current form looks the way it does, and which alternatives were tried and rejected.
+
+### Tidal term: bounded gate, not an unbounded power
+- The original tidal factor $g^{n_{\text{tide}}}$ is **unbounded**. Pushed toward the
+  values needed to place the amplitude correctly, it drove the inner Gamma–IRLS
+  fit to the saturation rails (predicted ratio $\to 0/1$), producing
+  `NaN`/`inf` weights and "estimation infeasible" failures. Normalizing
+  ($ (g/g_{\text{ref}})^{n_{\text{tide}}} $) fixed the *scaling* but not the IRLS
+  infeasibility.
+- Replacing it with a **bounded logistic gate** $W(g)=\sigma((g-g_{\text{thr}}^{\text{tide}})/(\text{width\_frac\_tide}\cdot g_{\text{thr}}^{\text{tide}}))$
+  keeps the inner GLM feasible everywhere, keeps the tidal design column linear
+  (so the two-stage GLM still applies), and is physically interpretable: the
+  threshold sets the salinity of the amplitude "knee" (~EC 10 mS/cm ↔ $g\approx20{,}000$ cfs),
+  and a **fitted** width controls how flat the high-salinity plateau is.
+
+### The observable tidal amplitude is multiplicative
+- Linearizing the kernel, the EC tidal amplitude is $\approx (EC-S_b)\,W(g)\times$(tidal swing).
+  It **must vanish as the estuary freshens** through the $(EC-S_b)$ prefactor.
+- Consequence: an **un-gated additive** tidal term is unphysical — it would keep
+  oscillating on fully fresh water. Tried and **rejected**.
+- The fresh-side rise is handled by $(EC-S_b)$; the high-salinity roll-off (rarely
+  reached at Martinez) is handled by $W(g)$. With $n_{\text{tide}}>0$-style rising
+  behavior the amplitude is a broad interior bump, **not** monotone — there was no
+  "contradiction" in the original sign.
+
+### Observed amplitude–salinity shape (from the diagnostic)
+- Tidal EC amplitude rises steeply to subtidal EC $\approx$ 10 mS/cm, then a broad
+  **high plateau** (~14–16 mS/cm) with a slight decline; the fully-marine roll-off
+  is essentially **unobserved** (subtidal EC tops out ~31 mS/cm; marine saturation
+  is rare, fresh saturation is common). So we fit the rise + plateau and do **not**
+  impose a marine roll-off in range. A single logistic gate with fitted width
+  reproduces this; the gentle mid-hump is a minor, cosmetic residual.
+
+### Objective function matters
+- The inner **Gamma deviance (log link)** is a *relative-error* measure dominated by
+  low-EC points, so it under-weights high-EC amplitude — leaving a ~15% low bias on
+  the plateau. **RMSE / least-squares** value high-EC absolute error.
+- Up-weighting the GLM toward high EC (`var_weights = y**weight_power`) was tried to
+  lift the plateau. It **destabilized the outer fit** (the search re-solved and
+  collapsed `energy_coef`) and worsened the rising limb without lifting the plateau —
+  **reverted** (`weight_power = 0`; knob retained). The ~2 mS/cm plateau bias is
+  accepted as cosmetic.
+- With the improved gate, the GLM and least-squares objectives **reconciled**
+  (per-sample deviance became ~equal) — a good sign the *form* improved rather than
+  one objective being traded for another.
+
+### Fitting window / data
+- Fit on **2004–2016** (spans both wet and dry extremes → broad EC coverage,
+  including the fresh end the relative-error criterion needs) generalizes forward
+  better than fitting the saltier, narrower 2018–2024 window.
+- **DSM2** historical NDO ends 2018-01; use **Dayflow** (through ~2024-10) for a
+  genuine multi-year out-of-sample window.
+- Fixing $\beta_0=0$ anchors $S_b$ as the asymptotic-low EC. The least-squares
+  "touch-up" honors this (`fit_run.inner.b0.fix`).
